@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<rect width="1200" height="760" fill="#f4f7fb"/>
+<style>text{font-family:Arial,sans-serif;fill:#172033}.title{font-size:32px;font-weight:bold}.head{font-size:22px;font-weight:bold}.label{font-size:17px}.small{font-size:14px}.wire{fill:none;stroke-width:5;stroke-linecap:round;stroke-linejoin:round}</style>
+<text x="600" y="48" text-anchor="middle" class="title">ESP32-PICO-KIT-1 + OLED + INMP441 I²S microphone</text>
+<rect x="65" y="100" width="400" height="530" rx="22" fill="#243248"/>
+<text x="265" y="140" text-anchor="middle" fill="white" class="head">ESP32-PICO-KIT-1</text>
+<g fill="white" class="label"><text x="95" y="220">3V3</text><text x="95" y="280">GND</text><text x="95" y="340">GPIO4</text><text x="95" y="400">GPIO0</text><text x="95" y="480">GPIO26</text><text x="95" y="540">GPIO25</text><text x="95" y="600">GPIO34</text></g>
+<g fill="white" class="small"><text x="385" y="220" text-anchor="end">3V3 OUT</text><text x="385" y="280" text-anchor="end">GND</text></g>
+<rect x="740" y="105" width="390" height="220" rx="18" fill="#e2f4ff" stroke="#3182bd" stroke-width="3"/>
+<text x="935" y="145" text-anchor="middle" class="head">4-pin SSD1306 OLED</text>
+<g class="label"><text x="780" y="195">VCC</text><text x="780" y="235">GND</text><text x="780" y="275">SDA</text><text x="980" y="195">3V3</text><text x="980" y="235">GND</text><text x="980" y="275">GPIO4</text><text x="980" y="305">SCL → GPIO0</text></g>
+<rect x="740" y="390" width="390" height="265" rx="18" fill="#fff1df" stroke="#d88924" stroke-width="3"/>
+<text x="935" y="430" text-anchor="middle" class="head">INMP441 module</text>
+<g class="label"><text x="780" y="480">L/R</text><text x="920" y="480">→ GND (left channel)</text><text x="780" y="520">WS</text><text x="920" y="520">→ GPIO25</text><text x="780" y="560">SCK</text><text x="920" y="560">→ GPIO26 (BCLK)</text><text x="780" y="610">GND → GND</text><text x="955" y="610">SD → GPIO34</text><text x="780" y="640">VDD → 3V3</text><text x="955" y="640">(pin order as shown in photo)</text></g>
+<path d="M465 220 H700 V195 H740" class="wire" stroke="#d92332"/><path d="M465 280 H690 V235 H740" class="wire" stroke="#303846"/><path d="M465 340 H680 V275 H740" class="wire"/><path d="M465 400 H665 V305 H740" class="wire" stroke="#8b5cf6"/>
+<path d="M465 220 H630 V640 H740" class="wire" stroke="#d92332"/><path d="M465 280 H615 V610 H740" class="wire" stroke="#303846"/><path d="M465 280 H600 V480 H740" class="wire" stroke="#303846"/><path d="M465 480 H590 V560 H740" class="wire" stroke="#1d7fbd"/><path d="M465 540 H575 V520 H740" class="wire" stroke="#2d9b55"/><path d="M465 600 H560 V610 H955" class="wire" stroke="#d18b1e"/>
+<rect x="65" y="670" width="1065" height="55" rx="12" fill="#fff" stroke="#c8d0dc"/>
+<text x="90" y="704" class="small">Power off before wiring. INMP441 is digital I²S: no GPIO37 connection and no resistor divider. Common ground required. Check your board silkscreen for GPIO labels.</text>
+</svg>

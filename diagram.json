@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "author": "OpenAI Codex",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-breadboard",
+      "id": "bb",
+      "top": 265,
+      "left": -45,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": 5,
+      "left": 330,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "audio",
+      "top": 160,
+      "left": 355,
+      "attrs": {
+        "value": "512"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "start",
+      "top": 120,
+      "left": 250,
+      "attrs": {
+        "color": "green",
+        "label": "START"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "stop",
+      "top": 200,
+      "left": 250,
+      "attrs": {
+        "color": "red",
+        "label": "STOP"
+      }
+    }
+  ],
+  "connections": [
+    [
+      "esp:D21",
+      "oled:SDA",
+      "green",
+      []
+    ],
+    [
+      "esp:D22",
+      "oled:SCL",
+      "blue",
+      []
+    ],
+    [
+      "esp:3V3",
+      "oled:VCC",
+      "red",
+      []
+    ],
+    [
+      "esp:GND.1",
+      "oled:GND",
+      "black",
+      []
+    ],
+    [
+      "esp:VP",
+      "audio:SIG",
+      "orange",
+      []
+    ],
+    [
+      "esp:3V3",
+      "audio:VCC",
+      "red",
+      []
+    ],
+    [
+      "esp:GND.2",
+      "audio:GND",
+      "black",
+      []
+    ],
+    [
+      "esp:D27",
+      "start:1.l",
+      "green",
+      []
+    ],
+    [
+      "start:2.l",
+      "esp:GND.1",
+      "black",
+      []
+    ],
+    [
+      "esp:D14",
+      "stop:1.l",
+      "red",
+      []
+    ],
+    [
+      "stop:2.l",
+      "esp:GND.1",
+      "black",
+      []
+    ]
+  ],
+  "dependencies": {}
+}
