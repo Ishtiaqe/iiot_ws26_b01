@@ -4,7 +4,8 @@
 
 struct PitchDetector {
 #ifdef DIRECT_OLED
-  float noise = 6.2f;
+  float noise = 6.2f; // Starting RMS noise estimate after MIC_SCALE_SHIFT;
+                      // adjust if quiet-room readings differ greatly.
 #else
   float noise = 3.0f;
 #endif
@@ -15,7 +16,8 @@ struct PitchDetector {
 
   float process(const uint16_t *samples, int n, float rate) {
     float mean = 0;
-    for (int i = 0; i < n; ++i) mean += samples[i];
+    for (int i = 0; i < n; ++i)
+      mean += samples[i];
     mean /= n;
     float energy = 0;
     for (int i = 0; i < n; ++i) {
@@ -24,6 +26,8 @@ struct PitchDetector {
     }
     rms = sqrtf(energy / n);
 #ifdef DIRECT_OLED
+    // The floor prevents silence from triggering; multipliers make the gate
+    // track changing room noise.
     threshold = active ? fmaxf(7.0f, noise * 1.15f) : fmaxf(8.0f, noise * 1.3f);
 #else
     threshold = fmaxf(8.0f, noise * (active ? 2.0f : 3.0f));
@@ -35,7 +39,8 @@ struct PitchDetector {
       quality = 0;
       return 0;
     }
-    constexpr int maxLag = 250;
+    constexpr int maxLag = 250; // At 16 kHz this covers notes down to about 64
+                                // Hz; raise it for lower notes.
     float difference[maxLag + 1];
     difference[0] = 1;
     float cumulative = 0;
@@ -48,18 +53,27 @@ struct PitchDetector {
       cumulative += sum;
       difference[lag] = cumulative > 0 ? sum * lag / cumulative : 1;
     }
-    int firstLag = (int)(rate / 550.0f);
+    int firstLag = (int)(rate / 550.0f); // Search from 550 Hz down to 65 Hz;
+                                         // adjust for the instrument's range.
     int lastLag = (int)(rate / 65.0f);
-    if (firstLag < 2) firstLag = 2;
-    if (lastLag > maxLag - 1) lastLag = maxLag - 1;
+    if (firstLag < 2)
+      firstLag = 2;
+    if (lastLag > maxLag - 1)
+      lastLag = maxLag - 1;
     for (int lag = firstLag; lag <= lastLag; ++lag) {
-      if (difference[lag] < 0.18f) {
-        while (lag < lastLag && difference[lag + 1] < difference[lag]) ++lag;
-        float a = difference[lag - 1], b = difference[lag], c = difference[lag + 1];
+      if (difference[lag] <
+          0.18f) { // Lower values reject more noisy/non-periodic windows;
+                   // higher values are more permissive.
+        while (lag < lastLag && difference[lag + 1] < difference[lag])
+          ++lag;
+        float a = difference[lag - 1], b = difference[lag],
+              c = difference[lag + 1];
         float denom = a - 2 * b + c;
         float offset = fabsf(denom) > 1e-9f ? 0.5f * (a - c) / denom : 0;
-        if (offset < -1) offset = -1;
-        if (offset > 1) offset = 1;
+        if (offset < -1)
+          offset = -1;
+        if (offset > 1)
+          offset = 1;
         quality = 1 - b;
         return rate / (lag + offset);
       }
