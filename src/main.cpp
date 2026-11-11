@@ -21,7 +21,6 @@ static int32_t i2sFrames[2048];
 #else
 constexpr int PIN_I2C_SDA = 21;
 constexpr int PIN_I2C_SCL = 22;
-constexpr int PIN_AUDIO = 36;
 #endif
 constexpr int PIN_START = 27;       // J3-8 IO27
 constexpr int PIN_STOP = 14;        // J3-9 IO14
@@ -46,9 +45,9 @@ constexpr int OLED_HEIGHT = 64;
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 float estimateFrequency() {
+#ifdef DIRECT_OLED
   constexpr int N = 1024;
   uint16_t samples[N];
-#ifdef DIRECT_OLED
   size_t bytesNeeded = sizeof(i2sFrames);
   size_t bytesRead = microphoneI2S.readBytes((char *)i2sFrames, bytesNeeded);
   if (bytesRead != bytesNeeded) return 0;
@@ -57,18 +56,6 @@ float estimateFrequency() {
     samples[i] = (uint16_t)(signedSample >> 4);
   }
   sampleRate = AUDIO_SAMPLE_RATE;
-#else
-  constexpr int SAMPLE_US = 125;
-  uint32_t start = micros();
-  uint32_t lastSample = start;
-  for (int i = 0; i < N; ++i) {
-    while ((uint32_t)(micros() - start) < (uint32_t)i * SAMPLE_US) {}
-    lastSample = micros();
-    samples[i] = analogRead(PIN_AUDIO);
-  }
-  uint32_t elapsed = lastSample - start;
-  sampleRate = elapsed ? (N - 1) * 1000000.0f / elapsed : 8000.0f;
-#endif
   uint32_t sum = 0;
   audioMin = 4095;
   audioMax = 0;
@@ -79,6 +66,9 @@ float estimateFrequency() {
   }
   audioMean = (float)sum / N;
   return pitchDetector.process(samples, N, sampleRate);
+#else
+  return 0;
+#endif
 }
 
 #ifdef DIRECT_OLED
@@ -115,9 +105,6 @@ void setup() {
     Serial.println("INMP441 I2S init failed; check BCLK/WS/SD wiring");
     while (true) delay(1000);
   }
-#else
-  analogReadResolution(12);
-  analogSetPinAttenuation(PIN_AUDIO, ADC_11db);
 #endif
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -126,8 +113,6 @@ void setup() {
   }
  #ifdef DIRECT_OLED
   Serial.printf("ESP32 tuner ready. INMP441 I2S: BCLK=%d WS=%d SD=%d at %lu Hz.\n", PIN_I2S_BCLK, PIN_I2S_WS, PIN_I2S_DATA, (unsigned long)AUDIO_SAMPLE_RATE);
- #else
-  Serial.printf("ESP32 tuner ready. Audio input: GPIO%d.\n", PIN_AUDIO);
  #endif
 }
 

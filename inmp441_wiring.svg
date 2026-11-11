@@ -15,5 +15,5 @@
 <path d="M465 220 H700 V195 H740" class="wire" stroke="#d92332"/><path d="M465 280 H690 V235 H740" class="wire" stroke="#303846"/><path d="M465 340 H680 V275 H740" class="wire"/><path d="M465 400 H665 V305 H740" class="wire" stroke="#8b5cf6"/>
 <path d="M465 220 H630 V640 H740" class="wire" stroke="#d92332"/><path d="M465 280 H615 V610 H740" class="wire" stroke="#303846"/><path d="M465 280 H600 V480 H740" class="wire" stroke="#303846"/><path d="M465 480 H590 V560 H740" class="wire" stroke="#1d7fbd"/><path d="M465 540 H575 V520 H740" class="wire" stroke="#2d9b55"/><path d="M465 600 H560 V610 H955" class="wire" stroke="#d18b1e"/>
 <rect x="65" y="670" width="1065" height="55" rx="12" fill="#fff" stroke="#c8d0dc"/>
-<text x="90" y="704" class="small">Power off before wiring. INMP441 is digital I²S: no GPIO37 connection and no resistor divider. Common ground required. Check your board silkscreen for GPIO labels.</text>
+<text x="90" y="704" class="small">Power off before wiring. INMP441 is digital I²S; no analog divider is used. Common ground required. Check your board silkscreen for GPIO labels.</text>
 </svg>

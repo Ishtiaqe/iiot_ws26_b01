@@ -27,15 +27,6 @@
       }
     },
     {
-      "type": "wokwi-potentiometer",
-      "id": "audio",
-      "top": 160,
-      "left": 355,
-      "attrs": {
-        "value": "512"
-      }
-    },
-    {
       "type": "wokwi-pushbutton",
       "id": "start",
       "top": 120,
@@ -78,24 +69,6 @@
     [
       "esp:GND.1",
       "oled:GND",
-      "black",
-      []
-    ],
-    [
-      "esp:VP",
-      "audio:SIG",
-      "orange",
-      []
-    ],
-    [
-      "esp:3V3",
-      "audio:VCC",
-      "red",
-      []
-    ],
-    [
-      "esp:GND.2",
-      "audio:GND",
       "black",
       []
     ],
