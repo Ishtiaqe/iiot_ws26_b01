@@ -2,9 +2,15 @@
 #include <cmath>
 #include <cstdint>
 
+// The left I2S slot contains signed PCM in the high bits. Keep the sign
+// through the gain adjustment so quiet negative values remain near zero.
+inline int16_t tunerSample(int32_t leftSlot) {
+  return static_cast<int16_t>(leftSlot >> 16) >> 3;
+}
+
 struct PitchDetector {
 #ifdef DIRECT_OLED
-  float noise = 6.2f; // Starting RMS noise estimate after MIC_SCALE_SHIFT;
+  float noise = 6.2f; // Starting RMS noise estimate after digital scaling;
                       // adjust if quiet-room readings differ greatly.
 #else
   float noise = 3.0f;
@@ -14,7 +20,13 @@ struct PitchDetector {
   float quality = 0;
   bool active = false;
 
-  float process(const uint16_t *samples, int n, float rate) {
+  float process(const int16_t *samples, int n, float rate) {
+    constexpr int maxLag = 250;
+    if (!samples || n <= maxLag || !(rate >= 2800 && rate <= 16120)) {
+      active = false;
+      quality = 0;
+      return 0;
+    }
     float mean = 0;
     for (int i = 0; i < n; ++i)
       mean += samples[i];
@@ -39,9 +51,8 @@ struct PitchDetector {
       quality = 0;
       return 0;
     }
-    constexpr int maxLag = 250; // At 16 kHz this covers notes down to about 64
-                                // Hz; raise it for lower notes.
     float difference[maxLag + 1];
+    float raw[maxLag + 1];
     difference[0] = 1;
     float cumulative = 0;
     for (int lag = 1; lag <= maxLag; ++lag) {
@@ -50,31 +61,24 @@ struct PitchDetector {
         float d = (float)samples[i] - samples[i + lag];
         sum += d * d;
       }
+      raw[lag] = sum;
       cumulative += sum;
       difference[lag] = cumulative > 0 ? sum * lag / cumulative : 1;
     }
-    int firstLag = (int)(rate / 550.0f); // Search from 550 Hz down to 65 Hz;
-                                         // adjust for the instrument's range.
-    int lastLag = (int)(rate / 65.0f);
-    if (firstLag < 2)
-      firstLag = 2;
-    if (lastLag > maxLag - 1)
-      lastLag = maxLag - 1;
-    for (int lag = firstLag; lag <= lastLag; ++lag) {
-      if (difference[lag] <
-          0.18f) { // Lower values reject more noisy/non-periodic windows;
-                   // higher values are more permissive.
-        while (lag < lastLag && difference[lag + 1] < difference[lag])
-          ++lag;
-        float a = difference[lag - 1], b = difference[lag],
-              c = difference[lag + 1];
+    const int firstLag = (int)(rate / 1400.0f);
+    const int lastLag = (int)ceilf(rate / 65.0f);
+    for (int lag = firstLag; lag <= lastLag && lag < maxLag; ++lag) {
+      if (difference[lag] < 0.18f && difference[lag] <= difference[lag - 1] &&
+          difference[lag] < difference[lag + 1]) {
+        // Refine on the unnormalized trough to avoid a short-period bias.
+        float a = raw[lag - 1], b = raw[lag], c = raw[lag + 1];
         float denom = a - 2 * b + c;
         float offset = fabsf(denom) > 1e-9f ? 0.5f * (a - c) / denom : 0;
         if (offset < -1)
           offset = -1;
         if (offset > 1)
           offset = 1;
-        quality = 1 - b;
+        quality = 1 - difference[lag];
         return rate / (lag + offset);
       }
     }

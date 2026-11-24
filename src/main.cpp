@@ -1,4 +1,5 @@
 #include "pitch.h"
+#include "tuner_display.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
@@ -18,19 +19,16 @@ constexpr int PIN_I2S_WS = 25;
 constexpr int PIN_I2S_DATA = 34;
 constexpr uint32_t AUDIO_SAMPLE_RATE =
     16000; // Samples per second; keep this within the mic's supported I²S rate.
-constexpr int MIC_SCALE_SHIFT =
-    3; // Digital gain: 3 is 2x the old setting of 4; smaller shifts boost
-       // signal and noise alike.
 I2SClass microphoneI2S;
 static int32_t i2sFrames[2048];
+constexpr uint32_t SERIAL_BAUD_RATE = 460800; // Enough bandwidth for 16 kHz, 16-bit mono PCM over USB serial.
 #else
 constexpr int PIN_I2C_SDA = 21;
 constexpr int PIN_I2C_SCL = 22;
+constexpr uint32_t SERIAL_BAUD_RATE = 115200;
 #endif
 constexpr int PIN_START = 27;            // J3-8 IO27
 constexpr int PIN_STOP = 14;             // J3-9 IO14
-constexpr uint32_t NOTE_HOLD_MS = 10000; // Keep the last detected note visible
-                                         // this long after pitch disappears.
 bool running =
 #ifdef DIRECT_OLED
     true;
@@ -42,13 +40,11 @@ uint32_t bridgeAt = 0;
 bool bridgeSeen = false;
 char serialLine[40];
 size_t serialLength = 0;
-uint16_t audioMin = 0, audioMax = 0;
+int16_t audioMin = 0, audioMax = 0;
 float audioMean = 0;
 uint32_t lastAudioReport = 0;
 PitchDetector pitchDetector;
 float sampleRate = 0;
-float heldPitchHz = 0;
-uint32_t heldPitchAt = 0;
 constexpr int OLED_WIDTH = 128;
 constexpr int OLED_HEIGHT = 64;
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -57,19 +53,18 @@ float estimateFrequency() {
 #ifdef DIRECT_OLED
   constexpr int N = 1024; // Samples per pitch estimate; larger windows improve
                           // low-note resolution but update slower.
-  uint16_t samples[N];
+  int16_t samples[N];
   size_t bytesNeeded = sizeof(i2sFrames);
   size_t bytesRead = microphoneI2S.readBytes((char *)i2sFrames, bytesNeeded);
   if (bytesRead != bytesNeeded)
     return 0;
   for (int i = 0; i < N; ++i) {
-    int16_t signedSample = (int16_t)(i2sFrames[i * 2] >> 16);
-    samples[i] = (uint16_t)(signedSample >> MIC_SCALE_SHIFT);
+    samples[i] = tunerSample(i2sFrames[i * 2]);
   }
   sampleRate = AUDIO_SAMPLE_RATE;
-  uint32_t sum = 0;
-  audioMin = 4095;
-  audioMax = 0;
+  int32_t sum = 0;
+  audioMin = INT16_MAX;
+  audioMax = INT16_MIN;
   for (int i = 0; i < N; ++i) {
     sum += samples[i];
     if (samples[i] < audioMin)
@@ -110,10 +105,40 @@ void recordAudio() {
   Serial.println();
   free(recording);
 }
+
+void streamLiveAudio() {
+  static int16_t pcm[1024];
+  char command[8] = {};
+  size_t commandLength = 0;
+  Serial.printf("LIVE_START %lu 1024\n", (unsigned long)AUDIO_SAMPLE_RATE);
+  Serial.flush();
+  while (true) {
+    size_t bytesRead = microphoneI2S.readBytes((char *)i2sFrames, sizeof(i2sFrames));
+    if (bytesRead != sizeof(i2sFrames)) continue;
+    for (int i = 0; i < 1024; ++i) pcm[i] = (int16_t)(i2sFrames[i * 2] >> 16);
+    Serial.write((const uint8_t *)pcm, sizeof(pcm));
+    while (Serial.available()) {
+      char c = (char)Serial.read();
+      if (c == '\r') continue;
+      if (c == '\n') {
+        command[commandLength] = 0;
+        if (strcmp(command, "STOP") == 0) {
+          Serial.println("LIVE_STOP");
+          return;
+        }
+        commandLength = 0;
+      } else if (commandLength < sizeof(command) - 1) {
+        command[commandLength++] = c;
+      } else {
+        commandLength = 0;
+      }
+    }
+  }
+}
 #endif
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(SERIAL_BAUD_RATE);
   pinMode(PIN_START, INPUT_PULLUP);
   pinMode(PIN_STOP, INPUT_PULLUP);
 #ifdef DIRECT_OLED
@@ -157,6 +182,8 @@ void loop() {
 #ifdef DIRECT_OLED
       else if (strcmp(serialLine, "REC") == 0)
         recordAudio();
+      else if (strcmp(serialLine, "LIVE") == 0)
+        streamLiveAudio();
 #endif
       serialLength = 0;
     } else if (c != '\r') {
@@ -166,21 +193,12 @@ void loop() {
         serialLength = 0;
     }
   }
-  bool bridgeActive = bridgeSeen && (uint32_t)(millis() - bridgeAt) < 1500;
+  bool bridgeActive = bridgeSeen && (uint32_t)(millis() - bridgeAt) < 230;
   float hz = running ? (bridgeActive ? bridgeHz : estimateFrequency()) : 0;
-  if (hz > 0 && hz <= 1000) {
-    heldPitchHz = hz;
-    heldPitchAt = millis();
-  }
-  // Keep the last valid tuner reading briefly so the pointer does not vanish
-  // between plucks.
-  bool holdLastPitch =
-      heldPitchHz > 0 && (uint32_t)(millis() - heldPitchAt) < NOTE_HOLD_MS;
-  float displayHz = holdLastPitch ? heldPitchHz : hz;
 #ifdef DIRECT_OLED
   if (running && !bridgeActive &&
       (uint32_t)(millis() - lastAudioReport) >= 1000) {
-    Serial.printf("I2S min=%u max=%u mean=%.0f span=%u rms=%.1f gate=%.1f "
+    Serial.printf("I2S min=%d max=%d mean=%.0f span=%d rms=%.1f gate=%.1f "
                   "quality=%.2f rate=%.0f pitch=%.1f Hz\n",
                   audioMin, audioMax, audioMean, audioMax - audioMin,
                   pitchDetector.rms, pitchDetector.threshold,
@@ -188,51 +206,14 @@ void loop() {
     lastAudioReport = millis();
   }
 #endif
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  char noteLine[32] = "--  --c";
-  float cents = 0;
-  bool pitchFound = displayHz > 0 && displayHz <= 1000;
-  if (pitchFound) {
-    float midi = 69.0f + 12.0f * log2f(displayHz / 440.0f);
-    float nearest = roundf(midi);
-    cents = (midi - nearest) * 100.0f;
-    const char *notes[] = {"C",  "C#", "D",  "D#", "E",  "F",
-                           "F#", "G",  "G#", "A",  "A#", "B"};
-    int note = (int)nearest;
-    int pitchClass = ((note % 12) + 12) % 12;
-    char noteLabel[16];
-    snprintf(noteLabel, sizeof(noteLabel), "%s%d", notes[pitchClass],
-             note / 12 - 1);
-    int centsRounded = (int)roundf(constrain(cents, -50.0f, 50.0f));
-    snprintf(noteLine, sizeof(noteLine), "%s %+dc", noteLabel, centsRounded);
-    Serial.printf("%.2f Hz, %s, %+.1f cents\n", hz, noteLabel, cents);
-  }
-  display.setTextSize(2);
-  display.setCursor((128 - (int)strlen(noteLine) * 12) / 2, 0);
-  display.print(noteLine);
-
-  // The OLED's first 16 rows are yellow; keep the note there and draw the tuner
-  // scale in the blue area.
-  display.drawFastHLine(8, 42, 112, SSD1306_WHITE);
-  display.drawFastVLine(64, 20, 34, SSD1306_WHITE);
-  display.drawFastVLine(58, 35, 15, SSD1306_WHITE);
-  display.drawFastVLine(70, 35, 15, SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 56);
-  display.print("-50c");
-  display.setCursor(50, 56);
-  display.print("-5");
-  display.setCursor(69, 56);
-  display.print("+5");
-  display.setCursor(101, 56);
-  display.print("+50c");
-  if (pitchFound) {
-    int marker = 64 + (int)roundf(constrain(cents, -50.0f, 50.0f) *
-                                  1.12f); // 112 px cover the -50c to +50c span.
-    display.fillTriangle(marker, 38, marker - 4, 30, marker + 4, 30,
-                         SSD1306_WHITE);
-  }
+  const auto reading = tuningReading(hz, running);
+  if (reading.note[0])
+    Serial.printf("%.2f Hz, %s, %+d cents\n", hz, reading.note, reading.cents);
+  drawTuner(display, hz, running);
   display.display();
-  delay(80);
+  // Blocking I2S reads already pace the physical tuner.
+  if (!running || bridgeActive) delay(20);
+#ifndef DIRECT_OLED
+  else delay(20);
+#endif
 }

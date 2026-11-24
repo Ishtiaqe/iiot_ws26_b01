@@ -2,6 +2,7 @@
 """Record one second from the INMP441 and save raw and normalized WAV files."""
 import argparse
 import array
+from datetime import datetime
 import math
 import sys
 import time
@@ -10,8 +11,10 @@ import serial
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--port', default='/dev/cu.usbserial-110')
+parser.add_argument('--output', help='output filename prefix; defaults to a timestamped name')
 args = parser.parse_args()
-with serial.Serial(args.port, 115200, timeout=1) as port:
+prefix = args.output or datetime.now().strftime('mic_%Y%m%d_%H%M%S')
+with serial.Serial(args.port, 460800, timeout=1) as port:
     time.sleep(2)
     port.reset_input_buffer()
     port.write(b'REC\n')
@@ -38,13 +41,15 @@ centered = [v - mean for v in values]
 rms = math.sqrt(sum(v * v for v in centered) / len(centered))
 peak = max(abs(v) for v in centered)
 print(f'I2S mean {mean:.1f}, range {min(values)}–{max(values)}, RMS {rms:.1f}, peak {peak:.1f}')
-for name, gain in [('mic_raw.wav', 16), ('mic_normalized.wav', min(1000, 16000 / peak) if peak else 1)]:
+for suffix, gain in [('raw', 1), ('normalized', min(64, 24000 / peak) if peak else 1)]:
+    name = f'{prefix}_{suffix}.wav'
     pcm = array.array('h', (max(-32768, min(32767, round(v * gain))) for v in centered))
     if sys.byteorder != 'little':
         pcm.byteswap()
-    with wave.open(name, 'wb') as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16000)
-        wav.writeframes(pcm.tobytes())
+    with open(name, 'xb') as output:
+        with wave.open(output, 'wb') as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(pcm.tobytes())
     print(f'Saved {name} (gain {gain:.1f}x)')
