@@ -38,7 +38,7 @@ Disconnect USB power before wiring. The firmware currently configures the pins b
 | Optional START button | one side / other side | GPIO27 / GND |
 | Optional STOP button | one side / other side | GPIO14 / GND |
 
-Use a 3.3 V-compatible OLED with 3.3 V I²C pull-ups, and share ground between the components. The tuner starts automatically. The buttons use internal pull-ups and should be normally open. See [inmp441_wiring.svg](inmp441_wiring.svg) for the configured connections; its OLED pins are likewise unconfirmed against the physical assembly.
+Use a 3.3 V-compatible OLED with 3.3 V I²C pull-ups, and share ground between the components. The tuner starts automatically. The buttons use internal pull-ups and should be normally open. See [inmp441_wiring.svg](inmp441_wiring.svg) for the microphone connections and ESP32 header numbers.
 
 ## Tracking and display
 
