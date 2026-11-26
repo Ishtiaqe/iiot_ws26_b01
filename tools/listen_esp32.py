@@ -24,9 +24,15 @@ with serial.Serial(args.port, 460800, timeout=2, write_timeout=2) as port:
     time.sleep(2)
     port.reset_input_buffer()
     port.write(b'LIVE\n')
-    response = port.readline().decode('ascii', errors='replace').strip()
-    if response != f'LIVE_START {SAMPLE_RATE} {BLOCK_SAMPLES}':
-        raise SystemExit(f'Unexpected response: {response!r}. Is the INMP441 firmware uploaded?')
+    # Normal tuner diagnostics can arrive between the buffer reset and LIVE.
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        response = port.readline().decode('ascii', errors='replace').strip()
+        if response == f'LIVE_START {SAMPLE_RATE} {BLOCK_SAMPLES}':
+            break
+    else:
+        port.write(b'STOP\n')
+        raise SystemExit('No live audio header. Check the port and direct_oled firmware.')
 
     print('Live mic monitoring started. Ctrl+C stops it; use headphones at low volume.')
     try:

@@ -1,4 +1,4 @@
-// Build from the project root: c++ -std=c++17 -O2 -DDIRECT_OLED tools/verify_tuner.cpp -o /tmp/verify-tuner
+// Build from the project root: c++ -std=c++17 -O2 tools/verify_tuner.cpp -o /tmp/verify-tuner
 #include "../src/pitch.h"
 #include "../src/tuner_display.h"
 #include <array>

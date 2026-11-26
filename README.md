@@ -1,102 +1,58 @@
-# ESP32-PICO-KIT-1 guitar tuner — Wokwi project
+# ESP32 chromatic guitar tuner
 
-This project is intended to be opened as a Wokwi ESP32 Arduino project. **Wokwi does not provide an ESP32-PICO-KIT-1 v1.0 board**, so `diagram.json` uses its ESP32 DevKit V1 stand-in. The firmware and wiring below use the *real PICO-KIT-1 J2/J3 header signal names and GPIO numbers* wherever they are connected. The stand-in's physical header positions are not the PICO-KIT-1 layout.
+Pluck one string near the INMP441 microphone. The OLED shows the nearest note, its octave, and how many cents the string is flat or sharp. For example, an open A string at 110 Hz reads **A2 +0c**. A weak or irregular frame clears the pointer and asks for another pluck.
 
-## Circuit and pins
+## Start reading the firmware here
 
-For the direct OLED placement shown in the user's photos, build and upload the `direct_oled` environment. It uses OLED SDA=GPIO4 and SCL=GPIO0, and the INMP441 digital microphone over I²S: SCK/BCLK=GPIO26, WS=GPIO25, SD=GPIO34, with L/R tied to GND (left channel). It starts automatically. The `esp32dev` environment is for the Wokwi display and host-microphone bridge. GPIO0 is a boot strap pin, so a connected display may affect boot or upload.
-
-The INMP441 is a digital I²S microphone. Power it from 3V3, connect its I²S pins as shown in `inmp441_wiring.svg`, and share ground with the ESP32. No analog divider is used.
-
-The detector reads 16 kHz I²S audio in 1024-sample windows, scales samples to a signed integer range for the existing RMS gate, and uses a YIN-style normalized difference function over approximately 65–1400 Hz. The direct OLED build reports audio range, RMS, gate, sample rate, and periodicity over serial. Real instrument accuracy is not yet validated.
-
-Use a full-size solderless breadboard (30 numbered rows is fine) with the controller across the center trench. The breadboard does not alter the signal mapping. In Wokwi the parts are shown as a logical wiring diagram; the `breadboard` visual part is a 30-row board, while individual wires still connect to the named pins.
-
-| Device pin | Connect to | Purpose |
+| To understand or change | Open | Where to look |
 |---|---|---|
-| OLED VCC / GND | PICO-KIT-1 3V3 / GND | display power |
-| OLED SDA / SCL | GPIO4 / GPIO0 | direct OLED firmware I²C pins |
-| INMP441 VDD / GND | 3V3 / common GND | microphone power |
-| INMP441 L/R | GND | select left channel |
-| INMP441 SCK / WS / SD | GPIO26 / GPIO25 / GPIO34 | I²S clock / word-select / data |
+| Wiring, input and timing | [src/main.cpp](src/main.cpp) | `setup()` starts the devices. `loop()` checks the buttons and serial commands, gets a pitch, and sends one reading to the OLED. |
+| Microphone samples and noise rejection | [src/pitch.h](src/pitch.h) | `tunerSample()` preserves the sign of the left I²S sample. `PitchDetector::process()` returns a frequency in hertz, or zero when the frame is too quiet or irregular. |
+| What the player sees | [src/tuner_display.h](src/tuner_display.h) | `tuningReading()` chooses the note and instruction. `drawTuner()` positions the text, scale and pointer on the 128 × 64 screen. |
+| Measurements used in the slides | [tools/verify_tuner.cpp](tools/verify_tuner.cpp) | `makeFrame()` generates the test audio. `main()` runs the clean, noisy, silent and held-note trials. |
 
-The Wokwi SSD1306 model labels VCC as a 5 V input; simulation uses it only as a supply pin. For the physical 3.3 V ESP32 kit, use a 3.3 V-compatible OLED module and power it from 3V3. Avoid 5 V pull-ups on SDA/SCL.
+**Example edit.** To widen the in-tune band to ±7 cents, change `IN_TUNE_CENTS` from 5 to 7 in `src/tuner_display.h`. A reading of +6c will then say **IN TUNE** and the two inner scale marks will move outward. This is a compile-time setting. Build again and upload to see it on the board. To move the action text, change its y-coordinate in `drawTuner()`. Pixel (0, 0) is the upper-left corner.
 
-### INMP441 wiring
+**How the detector decides.** One frame contains 1,024 samples. At 16,000 samples/second that is 64 ms. First the detector subtracts the average level and measures RMS loudness. Frames below the gate update the background estimate. For louder frames it compares the waveform with delayed copies. An A2 at 110 Hz repeats roughly every 145 samples. The detector refines the delay between samples, then divides the sample rate by the delay to get hertz. A single microphone can also pick up other repeating sounds, including voices.
 
-Use the labels on the microphone module. Connect VDD to 3V3, GND to ESP32 GND, L/R to GND, SCK to GPIO26, WS to GPIO25, and SD to GPIO34. L/R selects the left I²S slot read by the firmware. Do not connect VDD to 5V.
+## Build and upload
 
-## Simulator substitutions and limitations
+Connect the ESP32 with a USB data cable, then run:
 
-- **Board:** Wokwi `wokwi-esp32-devkit-v1` is a generic classic ESP32 DevKit, not the ESP32-PICO-KIT-1 v1.0. It runs the same classic ESP32 GPIO numbers used here; physical header order and onboard components differ.
-- **Microphone:** Wokwi does not simulate the physical INMP441. Use the Mac microphone bridge below to send estimated pitch to the simulated tuner; this does not test the ESP32 I²S wiring or pitch detector.
-- **Breadboard:** visual 30-row board included for reference; simulator wiring connects by logical pin names. It does not prove real-world mechanical placement or continuity.
-- **Audio algorithm:** the Mac bridge tests the display and tuner scale only. Physical INMP441 audio sampling requires the real board.
+```sh
+~/.platformio/penv/bin/pio run -e direct_oled -t upload
+```
 
-## Run in Wokwi
+For diagnostics, run `~/.platformio/penv/bin/pio device monitor -b 460800` after uploading. Close the monitor before uploading again. The optional `REC` and `LIVE` serial commands temporarily pause tuning.
 
-1. Open [Wokwi ESP32 project](https://wokwi.com/projects/new/esp32) and create an Arduino ESP32 project.
-2. Replace its `diagram.json` and `libraries.txt` with the included files, and copy the contents of `src/main.cpp` into its `sketch.ino` and add `src/pitch.h` and `src/tuner_display.h` as sketch tabs. The `wokwi.toml` is for the local Wokwi CLI/VS Code workflow after compiling to the listed build paths.
-3. Start simulation. The OLED shows the tuner scale; use the bridge below to supply a pitch.
-4. To make the simulated tuner show a note, use the Mac microphone bridge described below.
-5. For local Wokwi CLI/VS Code, compile the Arduino sketch so its output matches `wokwi.toml`, or adjust the firmware/ELF paths to your selected build system.
+## Physical circuit
 
-## Hardware installation and test
+Disconnect USB power before wiring. The firmware currently configures the pins below; the original physical OLED connections have not been independently verified. Confirm SDA and SCL against your actual wiring before connecting or uploading. GPIO0 is a boot strap pin, so the display may affect boot or upload.
 
-1. Place the PICO-KIT-1 across the breadboard trench; identify headers J2 and J3 by the silkscreen and official pinout. The kit is wider than a typical breadboard may allow; use two breadboards or jumper wires if the body obstructs rows.
-2. With USB disconnected, wire OLED and microphone ground to the shared ground rail; connect that rail to ESP32 GND.
-3. Connect the OLED to 3V3, GND, GPIO4 (SDA), and GPIO0 (SCL). Keep I²C pull-ups at 3.3 V.
-4. Connect the physical INMP441 according to the wiring table below.
-5. Install PlatformIO with the Espressif ESP32 Arduino core; select the correct serial port. The declared OLED libraries install through PlatformIO.
-6. With USB powering the kit, verify the tuner scale appears. Play one string near the microphone and observe the note and cents.
+| Component | Pin | ESP32 connection |
+|---|---|---|
+| OLED | VCC / GND | 3V3 / GND |
+| OLED | SDA / SCL | GPIO4 / GPIO0 (configured; physical wiring unconfirmed) |
+| INMP441 | VDD / GND | 3V3 / GND |
+| INMP441 | L/R | GND |
+| INMP441 | SCK / WS / SD | GPIO26 / GPIO25 / GPIO34 |
+| Optional START button | one side / other side | GPIO27 / GND |
+| Optional STOP button | one side / other side | GPIO14 / GND |
 
-## Files
+Use a 3.3 V-compatible OLED with 3.3 V I²C pull-ups, and share ground between the components. The tuner starts automatically. The buttons use internal pull-ups and should be normally open. See [inmp441_wiring.svg](inmp441_wiring.svg) for the configured connections; its OLED pins are likewise unconfirmed against the physical assembly.
 
-- `diagram.json` — Wokwi circuit visualization and wires
-- `src/main.cpp` — complete Arduino ESP32 firmware
-- `libraries.txt` — Wokwi Arduino libraries
-- `wokwi.toml` — local Wokwi project configuration
-- `inmp441_wiring.svg` — physical direct-OLED and INMP441 connection diagram
-
-## Project setup in this folder
-
-This folder is a PlatformIO project: `src/main.cpp` contains the sketch and `platformio.ini` declares the ESP32 target and display libraries. In VS Code, install PlatformIO and Wokwi extensions, open this folder, build the `esp32dev` environment, then run **Wokwi: Start Simulator**. The root `wokwi.toml` points to the PlatformIO build output. Wokwi may require a license depending on your account.
-
-For Arduino IDE, create a new sketch named `GuitarTuner` and copy the contents of `src/main.cpp` into `GuitarTuner.ino` and place both headers from `src/` in the sketch folder. For physical hardware, define `DIRECT_OLED` before the includes. Install the Espressif ESP32 board package through Boards Manager, select **ESP32 Dev Module** and the board's serial port, and install **Adafruit SSD1306** and **Adafruit GFX Library** through Library Manager. Connect the PICO-KIT-1 by a data-capable USB cable and press Upload. If connection fails, hold BOOT while upload begins, then release it. Use 460800 baud for physical hardware or 115200 for Wokwi.
-
-The physical build and the Wokwi build share the note, octave, cents, direction and pointer logic. The direct build evaluates one 64 ms audio frame at a time. Weak or rejected frames return the screen to “PLUCK ONE STRING”, and STOP clears the reading. The host microphone bridge has a separate 65–550 Hz detector.
+The detector processes 1024-sample frames at 16 kHz. Real instrument accuracy and display latency require hardware testing.
 
 ### Reproduce the presentation measurements
 
 Run from this directory on a computer with a C++17 compiler:
 
 ```sh
-c++ -std=c++17 -O2 -DDIRECT_OLED tools/verify_tuner.cpp -o /tmp/verify-tuner
+c++ -std=c++17 -O2 tools/verify_tuner.cpp -o /tmp/verify-tuner
 /tmp/verify-tuner
 ```
 
 The program uses generated signed audio, a fixed random seed, the firmware detector and the display decision logic. It also checks the I²S signed conversion. End-to-end accuracy, display latency and actual room noise require tests on the assembled tuner.
-
-## Mac microphone input in Wokwi
-
-The simulated START and STOP buttons control tuning. START connects GPIO27 (PICO-KIT-1 J3-8) to ground; STOP connects GPIO14 (J3-9) to ground. Both use internal pull-ups. Use normally open pushbuttons on physical hardware.
-
-Wokwi does not simulate the INMP441. The included bridge listens to the Mac microphone, estimates pitch on the Mac, and sends `HZ <frequency>` over Wokwi's RFC2217 serial port. This tests note display and buttons, but not the ESP32 I²S wiring or embedded pitch detector. The bridge uses the default macOS input device; select the desired microphone in System Settings. Use a single plucked note and a quiet room. Detection range is approximately 65–1400 Hz, covering E2 through B4; notes outside this range need changes to the bridge. Pitch readings can make octave errors in noisy or harmonic-rich recordings.
-
-1. Build the project in PlatformIO. Restart Wokwi after any change to `wokwi.toml`.
-2. In the VS Code terminal, from the project folder, run:
-
-   ```sh
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r tools/requirements.txt
-   ```
-
-3. Start the Wokwi simulator and keep its tab visible. Press the green START button. STOP pauses the display.
-4. In the terminal run `python tools/microphone_bridge.py`. Allow microphone access for the application running the terminal if macOS asks; adjust Privacy & Security > Microphone if needed. Play a note and watch the OLED. Press Ctrl+C to stop the bridge.
-5. If the bridge cannot connect, ensure Wokwi is running and port 4000 is available. Without the bridge, the simulated tuner shows no detected note.
-
-The physical tuner uses the INMP441 over I²S. The Mac bridge is only for the simulator; validate real guitar readings on the connected microphone.
 
 ## Listen to the physical INMP441 live
 

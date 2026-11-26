@@ -23,6 +23,8 @@ with serial.Serial(args.port, 460800, timeout=1) as port:
         line = port.readline().decode('ascii', errors='replace').strip()
         if line == 'RECORDING_IN_2_SECONDS':
             print('Recording starts in 2 seconds; make a sound for 1 second.', flush=True)
+        if line in {'RECORDING_ALLOC_FAILED', 'RECORDING_READ_FAILED'}:
+            raise SystemExit(f'ESP32 could not capture audio: {line}')
         if line == 'RECORDING_DATA 16000 16000':
             break
     else:

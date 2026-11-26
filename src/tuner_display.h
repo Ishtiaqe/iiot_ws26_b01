@@ -4,6 +4,12 @@
 #include <cstdio>
 #include <cstring>
 
+// Displayed cents are rounded to whole numbers. Both limits are inclusive.
+constexpr int IN_TUNE_CENTS = 5;
+constexpr float REFERENCE_A4_HZ = 440.0f;
+// The 112-pixel scale spans 100 cents, with zero at pixel 64.
+constexpr float PIXELS_PER_CENT = 1.12f;
+
 struct TuningReading {
   char note[8] = {};
   int cents = 0;
@@ -19,19 +25,21 @@ inline TuningReading tuningReading(float hz, bool running) {
   }
   // Allow small estimator rounding errors at the specified range boundaries.
   if (!(hz >= 64.8f && hz <= 1405.0f)) return result;
-  const float midi = 69 + 12 * log2f(hz / 440.0f);
+  // A4 is MIDI note 69. Each octave doubles the frequency and spans 12 notes.
+  const float midi = 69 + 12 * log2f(hz / REFERENCE_A4_HZ);
   const int nearest = lroundf(midi);
   const char *names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
   snprintf(result.note, sizeof(result.note), "%s%d", names[nearest % 12], nearest / 12 - 1);
   result.cents = lroundf((midi - nearest) * 100);
-  result.marker = 64 + lroundf(result.cents * 1.12f);
-  result.action = result.cents < -5 ? "TUNE UP" : result.cents > 5 ? "TUNE DOWN" : "IN TUNE";
+  result.marker = 64 + lroundf(result.cents * PIXELS_PER_CENT);
+  result.action = "IN TUNE";
+  if (result.cents < -IN_TUNE_CENTS) result.action = "TUNE UP";
+  if (result.cents > IN_TUNE_CENTS) result.action = "TUNE DOWN";
   return result;
 }
 
 template<typename Screen>
-void drawTuner(Screen &screen, float hz, bool running) {
-  const auto reading = tuningReading(hz, running);
+void drawTuner(Screen &screen, const TuningReading &reading) {
   screen.clearDisplay();
   screen.setTextColor(1);
   screen.setTextWrap(false);
@@ -46,7 +54,8 @@ void drawTuner(Screen &screen, float hz, bool running) {
   centered(title, 0, 2);
   centered(reading.action, 19, 1);
   screen.drawFastHLine(8, 43, 113, 1);
-  for (int tick : {8, 58, 64, 70, 120})
+  const int band = lroundf(IN_TUNE_CENTS * PIXELS_PER_CENT);
+  for (int tick : {8, 64 - band, 64, 64 + band, 120})
     screen.drawFastVLine(tick, tick == 64 ? 36 : 40, tick == 64 ? 14 : 7, 1);
   if (reading.note[0])
     screen.fillTriangle(reading.marker, 41, reading.marker - 4, 32, reading.marker + 4, 32, 1);

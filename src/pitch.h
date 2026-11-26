@@ -9,12 +9,8 @@ inline int16_t tunerSample(int32_t leftSlot) {
 }
 
 struct PitchDetector {
-#ifdef DIRECT_OLED
   float noise = 6.2f; // Starting RMS noise estimate after digital scaling;
                       // adjust if quiet-room readings differ greatly.
-#else
-  float noise = 3.0f;
-#endif
   float rms = 0;
   float threshold = 0;
   float quality = 0;
@@ -27,6 +23,7 @@ struct PitchDetector {
       quality = 0;
       return 0;
     }
+    // Remove the DC offset before measuring loudness (root mean square).
     float mean = 0;
     for (int i = 0; i < n; ++i)
       mean += samples[i];
@@ -37,13 +34,9 @@ struct PitchDetector {
       energy += v * v;
     }
     rms = sqrtf(energy / n);
-#ifdef DIRECT_OLED
     // The floor prevents silence from triggering; multipliers make the gate
     // track changing room noise.
     threshold = active ? fmaxf(7.0f, noise * 1.15f) : fmaxf(8.0f, noise * 1.3f);
-#else
-    threshold = fmaxf(8.0f, noise * (active ? 2.0f : 3.0f));
-#endif
     active = rms >= threshold;
     if (!active) {
       float bounded = fminf(rms, noise * 1.5f + 1.0f);
@@ -51,6 +44,9 @@ struct PitchDetector {
       quality = 0;
       return 0;
     }
+    // Compare the frame with delayed copies. A low difference means the
+    // waveform repeats after that many samples. Normalize each score by the
+    // average of the scores so far, as in the YIN pitch estimator.
     float difference[maxLag + 1];
     float raw[maxLag + 1];
     difference[0] = 1;
@@ -65,6 +61,8 @@ struct PitchDetector {
       cumulative += sum;
       difference[lag] = cumulative > 0 ? sum * lag / cumulative : 1;
     }
+    // Search short delays first to prefer one period over a multiple of it.
+    // A score below 0.18 admits a candidate only if it is also a local minimum.
     const int firstLag = (int)(rate / 1400.0f);
     const int lastLag = (int)ceilf(rate / 65.0f);
     for (int lag = firstLag; lag <= lastLag && lag < maxLag; ++lag) {
