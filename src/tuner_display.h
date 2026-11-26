@@ -13,8 +13,16 @@ constexpr float PIXELS_PER_CENT = 1.12f;
 
 constexpr uint32_t READING_HOLD_MS = 5000;
 constexpr float NOTE_SWITCH_MARGIN_CENTS = 3.0f;
+constexpr float FIRST_NOTE_CLARITY = 0.90f;
 
 enum class MicStatus { Ready, NoData, ReadError };
+
+inline int inputMeterLevel(float rms) {
+  if (rms < 0.5f)
+    return 0;
+  // Each bar represents approximately 6 dB of input level.
+  return static_cast<int>(fminf(12.0f, 1.0f + floorf(log2f(rms * 2.0f))));
+}
 
 struct TuningReading {
   int note = -1; // MIDI note number, or -1 when the dial is clear.
@@ -22,20 +30,21 @@ struct TuningReading {
   int marker = 64;
   bool held = false;
   bool stopped = false;
+  int inputLevel = 0;
   MicStatus micStatus = MicStatus::Ready;
 
   bool sameDisplayAs(const TuningReading &other) const {
     return note == other.note && cents == other.cents &&
            marker == other.marker && held == other.held && stopped == other.stopped &&
-           micStatus == other.micStatus;
+           micStatus == other.micStatus && inputLevel == other.inputLevel;
   }
 };
 
 class PitchTracker {
 public:
-  void accept(float frequency, uint32_t sampleTime) {
+  void accept(float frequency, float clarity, uint32_t sampleTime) {
     expire(sampleTime);
-    if (!(frequency >= 64.8f && frequency <= 1405.0f)) {
+    if (!(frequency > 0) || !std::isfinite(frequency)) {
       pendingNote = -1;
       reading.held = reading.note >= 0;
       return;
@@ -46,8 +55,10 @@ public:
     const int note = fabsf(centsFromCurrent) <= 50.0f + NOTE_SWITCH_MARGIN_CENTS
                          ? reading.note : lroundf(pitch);
     if (note != reading.note) {
-      // Confirm a new note before jumping across the dial or changing octaves.
-      if (note != pendingNote) {
+      // A clear pluck can acquire from idle in one window. Confirm weaker
+      // estimates and changes to a note that is already on screen.
+      const bool clearFirstNote = reading.note < 0 && clarity >= FIRST_NOTE_CLARITY;
+      if (note != pendingNote && !clearFirstNote) {
         pendingNote = note;
         reading.held = reading.note >= 0;
         return;
@@ -127,6 +138,8 @@ void drawTuner(Screen &screen, const TuningReading &reading) {
   };
   char title[20] = "--";
   const char *action = reading.stopped ? "STOPPED" : "PLUCK ONE STRING";
+  if (!reading.stopped && reading.inputLevel >= 3)
+    action = "SOUND, NO PITCH";
   if (!reading.stopped && reading.micStatus == MicStatus::NoData)
     action = "CHECK MIC WIRING";
   if (!reading.stopped && reading.micStatus == MicStatus::ReadError)
@@ -134,7 +147,7 @@ void drawTuner(Screen &screen, const TuningReading &reading) {
   if (reading.note >= 0) {
     constexpr const char *names[] = {"C", "C#", "D", "D#", "E", "F",
                                      "F#", "G", "G#", "A", "A#", "B"};
-    snprintf(title, sizeof(title), "%s%d %+dc", names[reading.note % 12],
+    snprintf(title, sizeof(title), "%s%d %+dc", names[(reading.note % 12 + 12) % 12],
              reading.note / 12 - 1, reading.cents);
     if (reading.held)
       action = "LAST READING";
@@ -153,6 +166,8 @@ void drawTuner(Screen &screen, const TuningReading &reading) {
     screen.drawFastVLine(tick, tick == 64 ? 36 : 40, tick == 64 ? 14 : 7, 1);
   if (reading.note >= 0)
     screen.fillTriangle(reading.marker, 41, reading.marker - 4, 32, reading.marker + 4, 32, 1);
+  if (reading.inputLevel > 0)
+    screen.fillRect(8, 51, reading.inputLevel * 3, 2, 1);
   screen.setCursor(4, 55); screen.print("-50");
   centered("0", 55, 1);
   screen.setCursor(103, 55); screen.print("+50");

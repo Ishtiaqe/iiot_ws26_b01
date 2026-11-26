@@ -12,7 +12,7 @@ Pluck one string near the INMP441 microphone. The OLED shows the nearest note, i
 
 **Example edit.** To widen the in-tune band to ±7 cents, change `IN_TUNE_CENTS` from 5 to 7 in `src/tuner_display.h`. A reading of +6c will then say **IN TUNE** and the two inner scale marks will move outward. This is a compile-time setting. Build again and upload to see it on the board. To move the action text, change its y-coordinate in `drawTuner()`. Pixel (0, 0) is the upper-left corner.
 
-**How the detector decides.** One frame contains 1,024 samples. At 16,000 samples/second that is 64 ms. First the detector subtracts the average level and measures RMS loudness. Frames below the gate update the background estimate. For louder frames it compares the waveform with delayed copies. An A2 at 110 Hz repeats roughly every 145 samples. The detector refines the delay between samples, then divides the sample rate by the delay to get hertz. A single microphone can also pick up other repeating sounds, including voices.
+**How the detector decides.** The ESP32 reads the left slot of a 32-bit stereo Philips I²S frame. It keeps the signed 24-bit samples and measures how closely the waveform repeats after the onset, removing DC offset before the comparison. Normalizing the energy in the two overlapping parts lets the detector compare a decaying string with an earlier, louder part of the same note. Peak selection follows the approach in [McLeod and Wyvill’s pitch paper](https://quod.lib.umich.edu/cgi/p/pod/dod-idx/smarter-way-to-find-pitch.pdf?c=icmc%3Bidno%3Dbbp2372.2005.107%3Bformat%3Dpdf).
 
 ## Build and upload
 
@@ -42,8 +42,10 @@ Use a 3.3 V-compatible OLED with 3.3 V I²C pull-ups, and share ground between t
 
 ## Tracking and display
 
-The microphone runs at 16 kHz. Pitch estimates use a 64 ms window and advance by 32 ms, for about 31 estimates per second when processing keeps up. The OLED updates on its own schedule, up to about 30 frames per second, and only transfers a frame when something visible changes.
+The microphone runs at 16 kHz. Pitch estimates use a 64 ms window and advance by 32 ms, for about 31 estimates per second when processing keeps up. There is no fixed musical frequency band. The sampling rate and analysis window still limit which pitches can be estimated reliably, and the detector requires a sufficiently repeating waveform. The OLED updates on its own schedule, up to about 30 frames per second, and only transfers a frame when something visible changes.
 
-While a note is valid, an exponential moving average follows large pitch changes more quickly and dampens smaller ones. The needle and cents readout resist one-step fluctuations. The nearest note has a 3-cent margin beyond its nominal boundary, and a new note takes two consecutive estimates to confirm. When the reference note changes, the needle takes the new note's position directly.
+While a note is valid, an exponential moving average follows large pitch changes more quickly and dampens smaller ones. The needle and cents readout resist one-step fluctuations. The nearest note has a 3-cent margin beyond its nominal boundary. One clear estimate can acquire the first note. Weaker estimates and changes of note take two matching estimates. When the reference note changes, the needle takes the new note's position directly.
 
 A missing estimate freezes the last rendered reading and shows **LAST READING**. Five seconds after the last accepted estimate, the tuner clears the needle and shows **PLUCK ONE STRING**. STOP clears the reading immediately. Actual update rate, latency, and rejection of background sounds need verification on the assembled tuner.
+
+The bar below the flat end of the dial shows microphone level even when there is no note. **SOUND, NO PITCH** means audio reached the ESP32 but did not pass the pitch checks. **CHECK MIC WIRING** means the left slot stayed constant. **MIC I2S ERROR** means the ESP32 could not initialize the mic input or read a block.

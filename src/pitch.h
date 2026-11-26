@@ -33,23 +33,39 @@ public:
     for (float sample : samples)
       mean += sample;
     mean /= WindowSamples;
+    float peakAmplitude = 0;
+    for (float sample : samples)
+      peakAmplitude = fmaxf(peakAmplitude, fabsf(sample - mean));
+
+    // Comparing pre-pluck silence with the ringing string lowers the
+    // correlation even for a clean note. Start at the audible onset.
+    int start = 0;
+    const float onsetLevel = peakAmplitude * 0.18f;
+    while (start < WindowSamples - 16 && fabsf(samples[start] - mean) < onsetLevel)
+      ++start;
+    const int length = WindowSamples - start;
+    const int maxLag = length / 2;
+    float activeMean = 0;
+    for (int i = start; i < WindowSamples; ++i)
+      activeMean += samples[i];
+    activeMean /= length;
 
     // Separate cumulative sums for even and odd samples let the dot product
     // visit every other pair while still evaluating every possible lag.
     energy[0] = energy[1] = 0;
-    for (int i = 0; i < WindowSamples; ++i) {
-      const float sample = samples[i] - mean;
+    for (int i = 0; i < length; ++i) {
+      const float sample = samples[start + i] - activeMean;
       centered[i] = sample;
       energy[i + 2] = energy[i] + sample * sample;
     }
-    const float rms = sqrtf((energy[WindowSamples] + energy[WindowSamples + 1]) /
+    const float rms = sqrtf((energy[length] + energy[length + 1]) /
                             WindowSamples);
     if (rms <= NUMERICAL_FLOOR)
       return {0, 0, rms};
 
     correlation[0] = 1;
-    for (int lag = 1; lag <= MAX_LAG; ++lag) {
-      const int span = (WindowSamples - lag + 1) & ~1;
+    for (int lag = 1; lag <= maxLag; ++lag) {
+      const int span = (length - lag + 1) & ~1;
       float dot = 0;
       for (int i = 0; i < span; i += 2)
         dot += centered[i] * centered[i + lag];
@@ -62,15 +78,15 @@ public:
     // McLeod-style peak selection, using geometric energy normalization
     // so a change in amplitude does not itself count as a pitch mismatch.
     int firstPeak = 2;
-    while (firstPeak < MAX_LAG && correlation[firstPeak - 1] > 0)
+    while (firstPeak < maxLag && correlation[firstPeak - 1] > 0)
       ++firstPeak;
     float strongest = 0;
-    for (int lag = firstPeak; lag < MAX_LAG; ++lag) {
+    for (int lag = firstPeak; lag < maxLag; ++lag) {
       if (isPeak(lag))
         strongest = fmaxf(strongest, correlation[lag]);
     }
     const float minimumPeak = fmaxf(MIN_CLARITY, strongest * PEAK_FRACTION);
-    for (int lag = firstPeak; lag < MAX_LAG; ++lag) {
+    for (int lag = firstPeak; lag < maxLag; ++lag) {
       if (!isPeak(lag) || correlation[lag] < minimumPeak)
         continue;
       const float before = correlation[lag - 1];

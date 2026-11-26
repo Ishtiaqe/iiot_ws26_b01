@@ -114,6 +114,8 @@ void loop() {
   static TuningReading displayed;
   static MicStatus micStatus = MicStatus::Ready;
   static uint32_t lastDisplayAt = 0;
+  static uint32_t lastSampleAt = 0;
+  static int inputLevel = 0;
   if (digitalRead(PIN_STOP) == LOW)
     running = false;
   else if (digitalRead(PIN_START) == LOW)
@@ -122,16 +124,21 @@ void loop() {
   PitchSample sample;
   if (xQueueReceive(latestPitch, &sample, 0) == pdTRUE) {
     micStatus = sample.micStatus;
+    lastSampleAt = sample.timestamp;
+    inputLevel = micStatus == MicStatus::Ready ? inputMeterLevel(sample.pitch.rms) : 0;
     if (running)
-      tracker.accept(sample.pitch.frequency, sample.timestamp);
+      tracker.accept(sample.pitch.frequency, sample.pitch.clarity, sample.timestamp);
   }
 
   const uint32_t now = millis();
   if (now - lastDisplayAt >= DISPLAY_INTERVAL_MS || running == displayed.stopped) {
     lastDisplayAt = now;
     TuningReading reading = tracker.render(now, running);
-    if (running && reading.note < 0)
-      reading.micStatus = micStatus;
+    if (running) {
+      reading.inputLevel = now - lastSampleAt <= 100 ? inputLevel : 0;
+      if (reading.note < 0)
+        reading.micStatus = micStatus;
+    }
     if (!reading.sameDisplayAs(displayed)) {
       drawTuner(display, reading);
       display.display();
