@@ -24,7 +24,7 @@ constexpr uint8_t OLED_ADDRESS = 0x3C;
 constexpr uint32_t DISPLAY_INTERVAL_MS = 33;
 
 struct PitchSample {
-  float frequency;
+  PitchEstimate pitch;
   uint32_t timestamp;
   MicStatus micStatus;
 };
@@ -35,21 +35,21 @@ QueueHandle_t latestPitch;
 
 void readPitch(void *) {
   static int32_t stereoBlock[2 * HOP_SAMPLES];
-  static int16_t window[WINDOW_SAMPLES];
-  PitchDetector detector;
+  static float window[WINDOW_SAMPLES];
+  static PitchDetector<WINDOW_SAMPLES> detector;
   bool havePreviousBlock = false;
   uint32_t lastChangingAudioAt = millis();
   for (;;) {
     if (!microphone.read(stereoBlock, 2 * HOP_SAMPLES)) {
       havePreviousBlock = false;
-      const PitchSample missing{0, millis(), MicStatus::ReadError};
+      const PitchSample missing{{}, millis(), MicStatus::ReadError};
       xQueueOverwrite(latestPitch, &missing);
       delay(1);
       continue;
     }
 
     const uint32_t capturedAt = millis();
-    float frequency = 0;
+    PitchEstimate estimate;
     const int32_t firstMicWord = stereoBlock[0] >> 8;
     bool changingAudio = false;
     for (int i = 0; i < HOP_SAMPLES; ++i) {
@@ -57,16 +57,16 @@ void readPitch(void *) {
       // L/R is grounded, so the microphone occupies the left I²S slot.
       const int32_t micWord = stereoBlock[2 * i];
       changingAudio |= (micWord >> 8) != firstMicWord;
-      window[i + HOP_SAMPLES] = tunerSample(micWord);
+      window[i + HOP_SAMPLES] = microphoneSample(micWord);
     }
     if (havePreviousBlock)
-      frequency = detector.process(window, WINDOW_SAMPLES, SAMPLE_RATE);
+      estimate = detector.process(window, SAMPLE_RATE);
     havePreviousBlock = true;
     if (changingAudio)
       lastChangingAudioAt = capturedAt;
     const auto micStatus = capturedAt - lastChangingAudioAt >= 500
                                ? MicStatus::NoData : MicStatus::Ready;
-    const PitchSample sample{frequency, capturedAt, micStatus};
+    const PitchSample sample{estimate, capturedAt, micStatus};
     xQueueOverwrite(latestPitch, &sample);
   }
 }
@@ -123,7 +123,7 @@ void loop() {
   if (xQueueReceive(latestPitch, &sample, 0) == pdTRUE) {
     micStatus = sample.micStatus;
     if (running)
-      tracker.accept(sample.frequency, sample.timestamp);
+      tracker.accept(sample.pitch.frequency, sample.timestamp);
   }
 
   const uint32_t now = millis();

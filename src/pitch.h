@@ -1,76 +1,91 @@
 #pragma once
+
 #include <cmath>
 #include <cstdint>
 
-// Keep the high 16 bits of the signed 24-bit I²S sample.
-inline int16_t tunerSample(int32_t leftSlot) {
-  return static_cast<int16_t>(leftSlot >> 16);
+struct PitchEstimate {
+  float frequency = 0;
+  float clarity = 0;
+  float rms = 0;
+};
+
+// The INMP441 sends signed 24-bit data in the high bits of its 32-bit slot.
+// Express it in 16-bit PCM units without rounding away the quiet bits.
+inline float microphoneSample(int32_t slot) {
+  return (slot >> 8) * (1.0f / 256.0f);
 }
 
+template<int WindowSamples>
 class PitchDetector {
-  float noise = 18.0f; // Initial estimate in 16-bit PCM units.
-  bool active = false;
+  static_assert(WindowSamples >= 16 && WindowSamples % 2 == 0);
+  static constexpr int MAX_LAG = WindowSamples / 2;
+  static constexpr float MIN_CLARITY = 0.72f;
+  static constexpr float PEAK_FRACTION = 0.90f;
+  static constexpr float NUMERICAL_FLOOR = 1.0f / 256.0f;
+
+  float centered[WindowSamples];
+  float energy[WindowSamples + 2];
+  float correlation[MAX_LAG + 1];
 
 public:
-  float process(const int16_t *samples, int n, float rate) {
-    constexpr int maxLag = 250;
-    if (!samples || n <= maxLag || !(rate >= 2800 && rate <= 16120)) {
-      active = false;
-      return 0;
-    }
-    // Remove the DC offset before measuring loudness (root mean square).
+  PitchEstimate process(const float (&samples)[WindowSamples], float sampleRate) {
     float mean = 0;
-    for (int i = 0; i < n; ++i)
-      mean += samples[i];
-    mean /= n;
-    float energy = 0;
-    for (int i = 0; i < n; ++i) {
-      float v = samples[i] - mean;
-      energy += v * v;
+    for (float sample : samples)
+      mean += sample;
+    mean /= WindowSamples;
+
+    // Separate cumulative sums for even and odd samples let the dot product
+    // visit every other pair while still evaluating every possible lag.
+    energy[0] = energy[1] = 0;
+    for (int i = 0; i < WindowSamples; ++i) {
+      const float sample = samples[i] - mean;
+      centered[i] = sample;
+      energy[i + 2] = energy[i] + sample * sample;
     }
-    const float rms = sqrtf(energy / n);
-    // The floor prevents silence from triggering; multipliers make the gate
-    // track changing room noise.
-    const float threshold = active ? fmaxf(16.0f, noise * 1.15f) : fmaxf(24.0f, noise * 1.3f);
-    active = rms >= threshold;
-    if (!active) {
-      float bounded = fminf(rms, noise * 1.5f + 8.0f);
-      noise += (bounded - noise) * (bounded < noise ? 0.08f : 0.015f);
-      return 0;
+    const float rms = sqrtf((energy[WindowSamples] + energy[WindowSamples + 1]) /
+                            WindowSamples);
+    if (rms <= NUMERICAL_FLOOR)
+      return {0, 0, rms};
+
+    correlation[0] = 1;
+    for (int lag = 1; lag <= MAX_LAG; ++lag) {
+      const int span = (WindowSamples - lag + 1) & ~1;
+      float dot = 0;
+      for (int i = 0; i < span; i += 2)
+        dot += centered[i] * centered[i + lag];
+      const float referenceEnergy = energy[span];
+      const float shiftedEnergy = energy[lag + span] - energy[lag];
+      const float product = referenceEnergy * shiftedEnergy;
+      correlation[lag] = product > 0 ? dot / sqrtf(product) : 0;
     }
-    // Compare the frame with delayed copies. A low difference means the
-    // waveform repeats after that many samples. Normalize each score by the
-    // average of the scores so far, as in the YIN pitch estimator.
-    float previousRaw = 0;
-    float candidateRaw = 0;
-    float previousScore = 1;
-    float candidateScore = 1;
-    float cumulative = 0;
-    const int firstLag = static_cast<int>(rate / 1400.0f);
-    const int lastLag = static_cast<int>(ceilf(rate / 65.0f));
-    for (int lag = 1; lag <= maxLag && lag <= lastLag + 1; ++lag) {
-      float sum = 0;
-      for (int i = 0; i < n - maxLag; ++i) {
-        const float delta = static_cast<float>(samples[i]) - samples[i + lag];
-        sum += delta * delta;
-      }
-      cumulative += sum;
-      const float score = cumulative > 0 ? sum * lag / cumulative : 1;
-      // Look one lag ahead to confirm a local minimum. Stop as soon as
-      // one passes the threshold, so higher notes require less work.
-      const int candidateLag = lag - 1;
-      if (candidateLag >= firstLag && candidateScore < 0.18f &&
-          candidateScore <= previousScore && candidateScore < score) {
-        const float curvature = previousRaw - 2 * candidateRaw + sum;
-        const float offset = fabsf(curvature) > 1e-9f
-                                 ? 0.5f * (previousRaw - sum) / curvature : 0;
-        return rate / (candidateLag + fminf(1, fmaxf(-1, offset)));
-      }
-      previousRaw = candidateRaw;
-      candidateRaw = sum;
-      previousScore = candidateScore;
-      candidateScore = score;
+
+    // McLeod-style peak selection, using geometric energy normalization
+    // so a change in amplitude does not itself count as a pitch mismatch.
+    int firstPeak = 2;
+    while (firstPeak < MAX_LAG && correlation[firstPeak - 1] > 0)
+      ++firstPeak;
+    float strongest = 0;
+    for (int lag = firstPeak; lag < MAX_LAG; ++lag) {
+      if (isPeak(lag))
+        strongest = fmaxf(strongest, correlation[lag]);
     }
-    return 0;
+    const float minimumPeak = fmaxf(MIN_CLARITY, strongest * PEAK_FRACTION);
+    for (int lag = firstPeak; lag < MAX_LAG; ++lag) {
+      if (!isPeak(lag) || correlation[lag] < minimumPeak)
+        continue;
+      const float before = correlation[lag - 1];
+      const float peak = correlation[lag];
+      const float after = correlation[lag + 1];
+      const float curvature = before - 2 * peak + after;
+      const float shift = curvature < -1e-6f ? 0.5f * (before - after) / curvature : 0;
+      return {sampleRate / fmaxf(2.0f, lag + shift), fminf(1.0f, peak), rms};
+    }
+    return {0, strongest, rms};
+  }
+
+private:
+  bool isPeak(int lag) const {
+    return correlation[lag] >= correlation[lag - 1] &&
+           correlation[lag] > correlation[lag + 1];
   }
 };
