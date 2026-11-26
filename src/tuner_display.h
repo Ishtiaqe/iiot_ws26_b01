@@ -5,7 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
-// Displayed cents are rounded to whole numbers. Both limits are inclusive.
+// Tuning and display policy. The in-tune thresholds apply to integer cents
+// shown to the player and are inclusive.
 constexpr int IN_TUNE_CENTS = 5;
 constexpr float REFERENCE_A4_HZ = 440.0f;
 // The 112-pixel scale spans 100 cents, with zero at pixel 64.
@@ -15,8 +16,11 @@ constexpr uint32_t READING_HOLD_MS = 5000;
 constexpr float NOTE_SWITCH_MARGIN_CENTS = 3.0f;
 constexpr float FIRST_NOTE_CLARITY = 0.90f;
 
+// Ready means changing samples were seen recently; NoData means the I²S stream
+// stayed constant; ReadError means the driver failed to return a whole block.
 enum class MicStatus { Ready, NoData, ReadError };
 
+/** Map frame RMS to a compact 0–12 level meter for the OLED. */
 inline int inputMeterLevel(float rms) {
   if (rms < 0.5f)
     return 0;
@@ -33,6 +37,8 @@ struct TuningReading {
   int inputLevel = 0;
   MicStatus micStatus = MicStatus::Ready;
 
+  // Equality is based on visible state so the firmware can skip redundant
+  // OLED transfers, which are slower than updating this small structure.
   bool sameDisplayAs(const TuningReading &other) const {
     return note == other.note && cents == other.cents &&
            marker == other.marker && held == other.held && stopped == other.stopped &&
@@ -40,8 +46,16 @@ struct TuningReading {
   }
 };
 
+/** Convert noisy per-frame estimates into a stable, time-aware UI reading.
+ *
+ * This class handles note acquisition/switch confirmation, cents smoothing,
+ * brief dropouts, and expiry. Call accept() when a new audio estimate arrives
+ * and render() at the display refresh rate. Timestamps are millis() values;
+ * unsigned subtraction keeps elapsed-time checks safe across timer rollover.
+ */
 class PitchTracker {
 public:
+  /** Incorporate one detector result captured at sampleTime. */
   void accept(float frequency, float clarity, uint32_t sampleTime) {
     expire(sampleTime);
     if (!(frequency > 0) || !std::isfinite(frequency)) {
@@ -50,6 +64,9 @@ public:
       return;
     }
 
+    // Convert frequency to the fractional MIDI note scale, where MIDI 69 is
+    // A4. The chosen note is held near its half-semitone boundary to avoid
+    // flickering between adjacent labels as the pitch wobbles.
     const float pitch = 69.0f + 12.0f * log2f(frequency / REFERENCE_A4_HZ);
     const float centsFromCurrent = 100.0f * (pitch - reading.note);
     const int note = fabsf(centsFromCurrent) <= 50.0f + NOTE_SWITCH_MARGIN_CENTS
@@ -75,6 +92,9 @@ public:
     reading.held = false;
   }
 
+  /** Update smoothing/expiry and return the state to render at time now.
+   * When running is false the returned reading is cleared and marked stopped.
+   */
   TuningReading render(uint32_t now, bool running) {
     if (!running) {
       reading = {};
@@ -109,6 +129,8 @@ private:
   uint32_t lastAcceptedAt = 0;
   uint32_t lastRenderAt = 0;
 
+  // Drop a stale note after its hold interval; brief losses are handled by
+  // render() as a held reading before this longer timeout is reached.
   void expire(uint32_t now) {
     if (reading.note >= 0 && now - lastAcceptedAt >= READING_HOLD_MS) {
       reading = {};
@@ -116,6 +138,7 @@ private:
     }
   }
 
+  // Clamp the pointer to the visible scale even when the pitch is far out.
   float markerPosition() const {
     return fminf(120.0f, fmaxf(8.0f, 64.0f + shownCents * PIXELS_PER_CENT));
   }
@@ -126,6 +149,7 @@ private:
   }
 };
 
+/** Draw one complete tuner frame to an Adafruit_SSD1306-compatible display. */
 template<typename Screen>
 void drawTuner(Screen &screen, const TuningReading &reading) {
   screen.clearDisplay();

@@ -7,7 +7,8 @@ Pluck one string near the INMP441 microphone. The OLED shows the nearest note, i
 | To understand or change | Open | Where to look |
 |---|---|---|
 | Wiring, input and timing | [src/main.cpp](src/main.cpp) | `setup()` starts the devices. `loop()` checks the buttons, gets a pitch, and sends one reading to the OLED. |
-| Microphone samples and noise rejection | [src/pitch.h](src/pitch.h) | `tunerSample()` preserves the sign of the left I²S sample. `PitchDetector::process()` returns a frequency in hertz, or zero when the frame is too quiet or irregular. |
+| I²S microphone setup and reads | [src/microphone.h](src/microphone.h) | `Microphone::begin()` configures the INMP441 stream. `Microphone::read()` returns a complete interleaved stereo block. |
+| Sample conversion and pitch analysis | [src/pitch.h](src/pitch.h) | `microphoneSample()` converts the signed left-slot sample. `PitchDetector::process()` returns a frequency in hertz, or zero when the frame is too quiet or irregular. |
 | What the player sees | [src/tuner_display.h](src/tuner_display.h) | `PitchTracker` selects and smooths the reading. `drawTuner()` positions the text, scale and pointer on the 128 × 64 screen. |
 
 **Example edit.** To widen the in-tune band to ±7 cents, change `IN_TUNE_CENTS` from 5 to 7 in `src/tuner_display.h`. A reading of +6c will then say **IN TUNE** and the two inner scale marks will move outward. This is a compile-time setting. Build again and upload to see it on the board. To move the action text, change its y-coordinate in `drawTuner()`. Pixel (0, 0) is the upper-left corner.

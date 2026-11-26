@@ -1,3 +1,5 @@
+// Firmware orchestration: configure the board peripherals, acquire pitch on a
+// background task, and render the latest tuning state on the OLED.
 #include "microphone.h"
 #include "pitch.h"
 #include "tuner_display.h"
@@ -8,7 +10,8 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-// ESP32-PICO-KIT-1 GPIO numbers.
+// ESP32-PICO-KIT-1 GPIO assignments. The OLED and microphone share the board's
+// ground; the INMP441 L/R pin is grounded so audio arrives in the left slot.
 constexpr int PIN_I2C_SDA = 4;
 constexpr int PIN_I2C_SCL = 0;
 constexpr gpio_num_t PIN_I2S_BCLK = GPIO_NUM_26;
@@ -16,6 +19,8 @@ constexpr gpio_num_t PIN_I2S_WS = GPIO_NUM_25;
 constexpr gpio_num_t PIN_I2S_DATA = GPIO_NUM_34;
 constexpr int PIN_START = 27;
 constexpr int PIN_STOP = 14;
+// A 1024-sample analysis frame spans 64 ms at 16 kHz. Advancing 512 samples
+// per read gives a 32 ms hop and reuses half of the previous frame.
 constexpr uint32_t SAMPLE_RATE = 16000;
 constexpr int WINDOW_SAMPLES = 1024;
 constexpr int HOP_SAMPLES = 512;
@@ -24,9 +29,9 @@ constexpr uint8_t OLED_ADDRESS = 0x3C;
 constexpr uint32_t DISPLAY_INTERVAL_MS = 33;
 
 struct PitchSample {
-  PitchEstimate pitch;
-  uint32_t timestamp;
-  MicStatus micStatus;
+  PitchEstimate pitch;   // Latest estimate; frequency is zero if no pitch passed.
+  uint32_t timestamp;    // millis() when this block was captured.
+  MicStatus micStatus;   // Distinguishes silence from I²S read failure.
 };
 
 Microphone microphone;
@@ -39,6 +44,8 @@ void readPitch(void *) {
   static PitchDetector<WINDOW_SAMPLES> detector;
   bool havePreviousBlock = false;
   uint32_t lastChangingAudioAt = millis();
+  // This FreeRTOS task owns all microphone reads and detector state. The
+  // length-one queue intentionally keeps only the newest result for the UI.
   for (;;) {
     if (!microphone.read(stereoBlock, 2 * HOP_SAMPLES)) {
       havePreviousBlock = false;
@@ -53,6 +60,7 @@ void readPitch(void *) {
     const int32_t firstMicWord = stereoBlock[0] >> 8;
     bool changingAudio = false;
     for (int i = 0; i < HOP_SAMPLES; ++i) {
+      // Shift the old frame's second half forward, then append this hop.
       window[i] = window[i + HOP_SAMPLES];
       // L/R is grounded, so the microphone occupies the left I²S slot.
       const int32_t micWord = stereoBlock[2 * i];
@@ -71,6 +79,8 @@ void readPitch(void *) {
   }
 }
 
+// Stop in a visible, diagnosable state when a required peripheral or task
+// cannot start. Serial output records the detailed reason for debugging.
 void halt(const char *message) {
   Serial.println(message);
   for (;;)
@@ -82,6 +92,8 @@ void setup() {
   pinMode(PIN_START, INPUT_PULLUP);
   pinMode(PIN_STOP, INPUT_PULLUP);
 
+  // Initialize and probe I²C separately so wiring/address failures get a
+  // useful serial message before the firmware enters its halted state.
   if (!Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, OLED_I2C_HZ))
     halt("OLED I2C initialization failed; check SDA and SCL");
   Wire.beginTransmission(OLED_ADDRESS);
@@ -102,6 +114,8 @@ void setup() {
   drawTuner(display, TuningReading{});
   display.display();
 
+  // A one-element overwrite queue is a latest-value mailbox: display work
+  // never makes audio acquisition wait for stale readings to be consumed.
   latestPitch = xQueueCreate(1, sizeof(PitchSample));
   // Audio acquisition and OLED transfers run independently.
   if (!latestPitch || xTaskCreate(readPitch, "pitch", 4096, nullptr, 2, nullptr) != pdPASS)
@@ -116,12 +130,14 @@ void loop() {
   static uint32_t lastDisplayAt = 0;
   static uint32_t lastSampleAt = 0;
   static int inputLevel = 0;
+  // Buttons are active-low because INPUT_PULLUP holds an unpressed button high.
   if (digitalRead(PIN_STOP) == LOW)
     running = false;
   else if (digitalRead(PIN_START) == LOW)
     running = true;
 
   PitchSample sample;
+  // Poll without blocking; this loop remains responsible for display timing.
   if (xQueueReceive(latestPitch, &sample, 0) == pdTRUE) {
     micStatus = sample.micStatus;
     lastSampleAt = sample.timestamp;
@@ -131,6 +147,7 @@ void loop() {
   }
 
   const uint32_t now = millis();
+  // Refresh at the UI rate, or immediately when START/STOP changes state.
   if (now - lastDisplayAt >= DISPLAY_INTERVAL_MS || running == displayed.stopped) {
     lastDisplayAt = now;
     TuningReading reading = tracker.render(now, running);

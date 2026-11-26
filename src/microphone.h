@@ -4,10 +4,25 @@
 #include <cstddef>
 #include <cstdint>
 
-// INMP441 drives the left slot when L/R is grounded. Philips I²S uses a
-// one-clock delay and the mic needs two 32-bit slots per sample period.
+/**
+ * Owns the ESP-IDF standard-mode I²S receive channel used by the INMP441.
+ *
+ * The microphone is configured as a Philips I²S stereo stream with 32-bit
+ * slots. Grounding its L/R pin selects the left slot; callers therefore read
+ * interleaved left/right words and use the even-indexed words as audio.
+ */
 class Microphone {
 public:
+  /** Create, configure, and enable the I²S receiver.
+   * @param sampleRate Audio frames per second (the tuner uses 16 kHz).
+   * @param clock      GPIO for I²S bit clock (SCK/BCLK).
+   * @param wordSelect GPIO for I²S word select (WS/LRCLK).
+   * @param data       GPIO receiving microphone serial data (SD).
+   * @return ESP_OK on success, otherwise the ESP-IDF error from setup.
+   *
+   * On partial failure the newly allocated channel is deleted so the object
+   * does not retain a handle that appears usable but cannot receive audio.
+   */
   esp_err_t begin(uint32_t sampleRate, gpio_num_t clock, gpio_num_t wordSelect,
                   gpio_num_t data) {
     i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
@@ -34,6 +49,14 @@ public:
     return error;
   }
 
+  /** Read exactly wordCount interleaved 32-bit slot words.
+   *
+   * This is a bounded read (100 ms timeout). A short read is treated as a
+   * failure because the pitch task expects complete stereo hops.
+   * @param stereoWords Destination buffer with room for wordCount values.
+   * @param wordCount   Number of 32-bit words, including both channels.
+   * @return true only when the driver filled the entire requested buffer.
+   */
   bool read(int32_t *stereoWords, size_t wordCount) {
     size_t bytesRead = 0;
     const size_t bytesRequested = wordCount * sizeof(*stereoWords);
@@ -43,5 +66,6 @@ public:
   }
 
 private:
+  // Created by begin(); the ESP-IDF driver owns its resources until deletion.
   i2s_chan_handle_t receiver = nullptr;
 };

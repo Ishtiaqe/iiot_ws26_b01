@@ -4,17 +4,30 @@
 #include <cstdint>
 
 struct PitchEstimate {
-  float frequency = 0;
-  float clarity = 0;
-  float rms = 0;
+  float frequency = 0; // Estimated fundamental in Hz; zero means no accepted peak.
+  float clarity = 0;   // Normalized correlation strength, approximately [0, 1].
+  float rms = 0;       // Root-mean-square amplitude in the converted sample units.
 };
 
-// The INMP441 sends signed 24-bit data in the high bits of its 32-bit slot.
-// Express it in 16-bit PCM units without rounding away the quiet bits.
+/** Convert one signed I²S slot into floating-point PCM-like units.
+ *
+ * The INMP441 places signed 24-bit audio in the high bits of its 32-bit slot.
+ * Dropping the low byte first preserves the sign and the useful quiet bits;
+ * scaling then expresses the result in roughly 16-bit PCM units.
+ */
 inline float microphoneSample(int32_t slot) {
   return (slot >> 8) * (1.0f / 256.0f);
 }
 
+/** YIN/McLeod-style periodicity detector for a fixed-size audio frame.
+ *
+ * The detector removes DC offset, starts analysis near the first audible
+ * onset, and compares each candidate lag using energy-normalized correlation.
+ * It selects a strong local peak and interpolates around that peak for a
+ * sub-sample lag estimate. The arrays are members to avoid large temporary
+ * allocations on the ESP32 task stack. One instance should be used by one
+ * task at a time; process() is not reentrant or thread-safe.
+ */
 template<int WindowSamples>
 class PitchDetector {
   static_assert(WindowSamples >= 16 && WindowSamples % 2 == 0);
@@ -28,6 +41,12 @@ class PitchDetector {
   float correlation[MAX_LAG + 1];
 
 public:
+  /** Analyze one frame and return its fundamental-frequency estimate.
+   * @param samples    Fixed-size frame in microphoneSample() units.
+   * @param sampleRate Number of samples per second.
+   * @return Frequency in Hz, clarity and frame RMS. A zero frequency indicates
+   *         silence or that no sufficiently strong repeating peak was found.
+   */
   PitchEstimate process(const float (&samples)[WindowSamples], float sampleRate) {
     float mean = 0;
     for (float sample : samples)
@@ -44,6 +63,8 @@ public:
     while (start < WindowSamples - 16 && fabsf(samples[start] - mean) < onsetLevel)
       ++start;
     const int length = WindowSamples - start;
+    // Limiting the lag to half the active frame keeps enough overlapping
+    // samples for a meaningful comparison.
     const int maxLag = length / 2;
     float activeMean = 0;
     for (int i = start; i < WindowSamples; ++i)
@@ -65,6 +86,8 @@ public:
 
     correlation[0] = 1;
     for (int lag = 1; lag <= maxLag; ++lag) {
+      // Use the largest even span so paired samples can be accumulated by
+      // stepping two positions at a time; every lag is still evaluated.
       const int span = (length - lag + 1) & ~1;
       float dot = 0;
       for (int i = 0; i < span; i += 2)
@@ -100,6 +123,7 @@ public:
   }
 
 private:
+  // Strictly prefer the right side on a flat plateau so a peak is selected once.
   bool isPeak(int lag) const {
     return correlation[lag] >= correlation[lag - 1] &&
            correlation[lag] > correlation[lag + 1];
