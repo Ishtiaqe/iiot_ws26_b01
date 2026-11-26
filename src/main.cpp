@@ -1,8 +1,8 @@
+#include "microphone.h"
 #include "pitch.h"
 #include "tuner_display.h"
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
-#include <ESP_I2S.h>
 #include <Wire.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -11,9 +11,9 @@
 // ESP32-PICO-KIT-1 GPIO numbers.
 constexpr int PIN_I2C_SDA = 4;
 constexpr int PIN_I2C_SCL = 0;
-constexpr int PIN_I2S_BCLK = 26;
-constexpr int PIN_I2S_WS = 25;
-constexpr int PIN_I2S_DATA = 34;
+constexpr gpio_num_t PIN_I2S_BCLK = GPIO_NUM_26;
+constexpr gpio_num_t PIN_I2S_WS = GPIO_NUM_25;
+constexpr gpio_num_t PIN_I2S_DATA = GPIO_NUM_34;
 constexpr int PIN_START = 27;
 constexpr int PIN_STOP = 14;
 constexpr uint32_t SAMPLE_RATE = 16000;
@@ -29,7 +29,7 @@ struct PitchSample {
   MicStatus micStatus;
 };
 
-I2SClass microphone;
+Microphone microphone;
 Adafruit_SSD1306 display(128, 64, &Wire, -1, OLED_I2C_HZ, OLED_I2C_HZ);
 QueueHandle_t latestPitch;
 
@@ -40,8 +40,7 @@ void readPitch(void *) {
   bool havePreviousBlock = false;
   uint32_t lastChangingAudioAt = millis();
   for (;;) {
-    if (microphone.readBytes(reinterpret_cast<char *>(stereoBlock),
-                             sizeof(stereoBlock)) != sizeof(stereoBlock)) {
+    if (!microphone.read(stereoBlock, 2 * HOP_SAMPLES)) {
       havePreviousBlock = false;
       const PitchSample missing{0, millis(), MicStatus::ReadError};
       xQueueOverwrite(latestPitch, &missing);
@@ -90,10 +89,10 @@ void setup() {
     halt("OLED not responding at 0x3C; check wiring and address");
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS, true, false))
     halt("SSD1306 initialization failed");
-  microphone.setPins(PIN_I2S_BCLK, PIN_I2S_WS, -1, PIN_I2S_DATA);
-  microphone.setTimeout(100);
-  if (!microphone.begin(I2S_MODE_STD, SAMPLE_RATE,
-                        I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
+  const esp_err_t micError = microphone.begin(SAMPLE_RATE, PIN_I2S_BCLK,
+                                              PIN_I2S_WS, PIN_I2S_DATA);
+  if (micError != ESP_OK) {
+    Serial.printf("I2S driver: %s\n", esp_err_to_name(micError));
     TuningReading reading;
     reading.micStatus = MicStatus::ReadError;
     drawTuner(display, reading);
