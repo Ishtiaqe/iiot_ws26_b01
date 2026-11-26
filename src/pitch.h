@@ -2,25 +2,20 @@
 #include <cmath>
 #include <cstdint>
 
-// The left I2S slot contains signed PCM in the high bits. Keep the sign
-// through the gain adjustment so quiet negative values remain near zero.
+// Keep the high 16 bits of the signed 24-bit I²S sample.
 inline int16_t tunerSample(int32_t leftSlot) {
-  return static_cast<int16_t>(leftSlot >> 16) >> 3;
+  return static_cast<int16_t>(leftSlot >> 16);
 }
 
-struct PitchDetector {
-  float noise = 6.2f; // Starting RMS noise estimate after digital scaling;
-                      // adjust if quiet-room readings differ greatly.
-  float rms = 0;
-  float threshold = 0;
-  float quality = 0;
+class PitchDetector {
+  float noise = 18.0f; // Initial estimate in 16-bit PCM units.
   bool active = false;
 
+public:
   float process(const int16_t *samples, int n, float rate) {
     constexpr int maxLag = 250;
     if (!samples || n <= maxLag || !(rate >= 2800 && rate <= 16120)) {
       active = false;
-      quality = 0;
       return 0;
     }
     // Remove the DC offset before measuring loudness (root mean square).
@@ -33,54 +28,49 @@ struct PitchDetector {
       float v = samples[i] - mean;
       energy += v * v;
     }
-    rms = sqrtf(energy / n);
+    const float rms = sqrtf(energy / n);
     // The floor prevents silence from triggering; multipliers make the gate
     // track changing room noise.
-    threshold = active ? fmaxf(7.0f, noise * 1.15f) : fmaxf(8.0f, noise * 1.3f);
+    const float threshold = active ? fmaxf(16.0f, noise * 1.15f) : fmaxf(24.0f, noise * 1.3f);
     active = rms >= threshold;
     if (!active) {
-      float bounded = fminf(rms, noise * 1.5f + 1.0f);
+      float bounded = fminf(rms, noise * 1.5f + 8.0f);
       noise += (bounded - noise) * (bounded < noise ? 0.08f : 0.015f);
-      quality = 0;
       return 0;
     }
     // Compare the frame with delayed copies. A low difference means the
     // waveform repeats after that many samples. Normalize each score by the
     // average of the scores so far, as in the YIN pitch estimator.
-    float difference[maxLag + 1];
-    float raw[maxLag + 1];
-    difference[0] = 1;
+    float previousRaw = 0;
+    float candidateRaw = 0;
+    float previousScore = 1;
+    float candidateScore = 1;
     float cumulative = 0;
-    for (int lag = 1; lag <= maxLag; ++lag) {
+    const int firstLag = static_cast<int>(rate / 1400.0f);
+    const int lastLag = static_cast<int>(ceilf(rate / 65.0f));
+    for (int lag = 1; lag <= maxLag && lag <= lastLag + 1; ++lag) {
       float sum = 0;
       for (int i = 0; i < n - maxLag; ++i) {
-        float d = (float)samples[i] - samples[i + lag];
-        sum += d * d;
+        const float delta = static_cast<float>(samples[i]) - samples[i + lag];
+        sum += delta * delta;
       }
-      raw[lag] = sum;
       cumulative += sum;
-      difference[lag] = cumulative > 0 ? sum * lag / cumulative : 1;
-    }
-    // Search short delays first to prefer one period over a multiple of it.
-    // A score below 0.18 admits a candidate only if it is also a local minimum.
-    const int firstLag = (int)(rate / 1400.0f);
-    const int lastLag = (int)ceilf(rate / 65.0f);
-    for (int lag = firstLag; lag <= lastLag && lag < maxLag; ++lag) {
-      if (difference[lag] < 0.18f && difference[lag] <= difference[lag - 1] &&
-          difference[lag] < difference[lag + 1]) {
-        // Refine on the unnormalized trough to avoid a short-period bias.
-        float a = raw[lag - 1], b = raw[lag], c = raw[lag + 1];
-        float denom = a - 2 * b + c;
-        float offset = fabsf(denom) > 1e-9f ? 0.5f * (a - c) / denom : 0;
-        if (offset < -1)
-          offset = -1;
-        if (offset > 1)
-          offset = 1;
-        quality = 1 - difference[lag];
-        return rate / (lag + offset);
+      const float score = cumulative > 0 ? sum * lag / cumulative : 1;
+      // Look one lag ahead to confirm a local minimum. Stop as soon as
+      // one passes the threshold, so higher notes require less work.
+      const int candidateLag = lag - 1;
+      if (candidateLag >= firstLag && candidateScore < 0.18f &&
+          candidateScore <= previousScore && candidateScore < score) {
+        const float curvature = previousRaw - 2 * candidateRaw + sum;
+        const float offset = fabsf(curvature) > 1e-9f
+                                 ? 0.5f * (previousRaw - sum) / curvature : 0;
+        return rate / (candidateLag + fminf(1, fmaxf(-1, offset)));
       }
+      previousRaw = candidateRaw;
+      candidateRaw = sum;
+      previousScore = candidateScore;
+      candidateScore = score;
     }
-    quality = 0;
     return 0;
   }
 };

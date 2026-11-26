@@ -1,11 +1,12 @@
 #include "pitch.h"
 #include "tuner_display.h"
-#include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
-#include <Wire.h>
-#include <math.h>
 #include <ESP_I2S.h>
+#include <Wire.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 // ESP32-PICO-KIT-1 GPIO numbers.
 constexpr int PIN_I2C_SDA = 4;
@@ -13,178 +14,130 @@ constexpr int PIN_I2C_SCL = 0;
 constexpr int PIN_I2S_BCLK = 26;
 constexpr int PIN_I2S_WS = 25;
 constexpr int PIN_I2S_DATA = 34;
-constexpr uint32_t AUDIO_SAMPLE_RATE =
-    16000; // Samples per second; keep this within the mic's supported I²S rate.
-I2SClass microphoneI2S;
-constexpr int FRAME_SAMPLES = 1024; // 64 ms of mono sound at 16 kHz.
-static int32_t i2sFrames[2 * FRAME_SAMPLES]; // Interleaved left and right slots.
-bool running = true;
-constexpr uint32_t SERIAL_BAUD_RATE = 460800; // Enough bandwidth for 16 kHz, 16-bit mono PCM over USB serial.
-constexpr int PIN_START = 27;            // J3-8 IO27
-constexpr int PIN_STOP = 14;             // J3-9 IO14
-char serialLine[40];
-size_t serialLength = 0;
-int16_t audioMin = 0, audioMax = 0;
-float audioMean = 0;
-uint32_t lastAudioReport = 0;
-PitchDetector pitchDetector;
+constexpr int PIN_START = 27;
+constexpr int PIN_STOP = 14;
+constexpr uint32_t SAMPLE_RATE = 16000;
+constexpr int WINDOW_SAMPLES = 1024;
+constexpr int HOP_SAMPLES = 512;
+constexpr uint32_t OLED_I2C_HZ = 400000;
+constexpr uint8_t OLED_ADDRESS = 0x3C;
+constexpr uint32_t DISPLAY_INTERVAL_MS = 33;
 
-constexpr int OLED_WIDTH = 128;
-constexpr int OLED_HEIGHT = 64;
-Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+struct PitchSample {
+  float frequency;
+  uint32_t timestamp;
+  MicStatus micStatus;
+};
 
-bool readMicFrame() {
-  return microphoneI2S.readBytes((char *)i2sFrames, sizeof(i2sFrames)) == sizeof(i2sFrames);
+I2SClass microphone;
+Adafruit_SSD1306 display(128, 64, &Wire, -1, OLED_I2C_HZ, OLED_I2C_HZ);
+QueueHandle_t latestPitch;
+
+void readPitch(void *) {
+  static int32_t stereoBlock[2 * HOP_SAMPLES];
+  static int16_t window[WINDOW_SAMPLES];
+  PitchDetector detector;
+  bool havePreviousBlock = false;
+  uint32_t lastChangingAudioAt = millis();
+  for (;;) {
+    if (microphone.readBytes(reinterpret_cast<char *>(stereoBlock),
+                             sizeof(stereoBlock)) != sizeof(stereoBlock)) {
+      havePreviousBlock = false;
+      const PitchSample missing{0, millis(), MicStatus::ReadError};
+      xQueueOverwrite(latestPitch, &missing);
+      delay(1);
+      continue;
+    }
+
+    const uint32_t capturedAt = millis();
+    float frequency = 0;
+    const int32_t firstMicWord = stereoBlock[0] >> 8;
+    bool changingAudio = false;
+    for (int i = 0; i < HOP_SAMPLES; ++i) {
+      window[i] = window[i + HOP_SAMPLES];
+      // L/R is grounded, so the microphone occupies the left I²S slot.
+      const int32_t micWord = stereoBlock[2 * i];
+      changingAudio |= (micWord >> 8) != firstMicWord;
+      window[i + HOP_SAMPLES] = tunerSample(micWord);
+    }
+    if (havePreviousBlock)
+      frequency = detector.process(window, WINDOW_SAMPLES, SAMPLE_RATE);
+    havePreviousBlock = true;
+    if (changingAudio)
+      lastChangingAudioAt = capturedAt;
+    const auto micStatus = capturedAt - lastChangingAudioAt >= 500
+                               ? MicStatus::NoData : MicStatus::Ready;
+    const PitchSample sample{frequency, capturedAt, micStatus};
+    xQueueOverwrite(latestPitch, &sample);
+  }
 }
 
-float estimateFrequency() {
-  if (!readMicFrame()) return 0;
-  int16_t samples[FRAME_SAMPLES];
-  int32_t sum = 0;
-  audioMin = INT16_MAX;
-  audioMax = INT16_MIN;
-  for (int i = 0; i < FRAME_SAMPLES; ++i) {
-    // L/R is grounded on the INMP441, so slot 2*i holds our microphone.
-    samples[i] = tunerSample(i2sFrames[2 * i]);
-    sum += samples[i];
-    if (samples[i] < audioMin)
-      audioMin = samples[i];
-    if (samples[i] > audioMax)
-      audioMax = samples[i];
-  }
-  audioMean = (float)sum / FRAME_SAMPLES;
-  return pitchDetector.process(samples, FRAME_SAMPLES, AUDIO_SAMPLE_RATE);
-}
-
-void recordAudio() {
-  constexpr int count = AUDIO_SAMPLE_RATE; // One second of raw audio for the
-                                           // optional serial REC command.
-  int16_t *recording = (int16_t *)malloc(count * sizeof(int16_t));
-  if (!recording) {
-    Serial.println("RECORDING_ALLOC_FAILED");
-    return;
-  }
-  Serial.println("RECORDING_IN_2_SECONDS");
-  Serial.flush();
-  for (int i = 0; i < 32; ++i)
-    microphoneI2S.readBytes((char *)i2sFrames, sizeof(i2sFrames));
-  for (int offset = 0; offset < count; offset += FRAME_SAMPLES) {
-    if (!readMicFrame()) {
-      free(recording);
-      Serial.println("RECORDING_READ_FAILED");
-      return;
-    }
-    int block = min(FRAME_SAMPLES, count - offset);
-    for (int i = 0; i < block; ++i)
-      recording[offset + i] = (int16_t)(i2sFrames[i * 2] >> 16);
-  }
-  Serial.printf("RECORDING_DATA %d %lu\n", count,
-                (unsigned long)AUDIO_SAMPLE_RATE);
-  Serial.write((const uint8_t *)recording, count * sizeof(int16_t));
-  Serial.flush();
-  Serial.println();
-  free(recording);
-}
-
-void streamLiveAudio() {
-  static int16_t pcm[FRAME_SAMPLES];
-  char command[8] = {};
-  size_t commandLength = 0;
-  Serial.printf("LIVE_START %lu %d\n", (unsigned long)AUDIO_SAMPLE_RATE, FRAME_SAMPLES);
-  Serial.flush();
-  while (true) {
-    if (readMicFrame()) {
-      for (int i = 0; i < FRAME_SAMPLES; ++i)
-        pcm[i] = (int16_t)(i2sFrames[i * 2] >> 16);
-      Serial.write((const uint8_t *)pcm, sizeof(pcm));
-    }
-    while (Serial.available()) {
-      char c = (char)Serial.read();
-      if (c == '\r') continue;
-      if (c == '\n') {
-        command[commandLength] = 0;
-        if (strcmp(command, "STOP") == 0) {
-          Serial.println("LIVE_STOP");
-          return;
-        }
-        commandLength = 0;
-      } else if (commandLength < sizeof(command) - 1) {
-        command[commandLength++] = c;
-      } else {
-        commandLength = 0;
-      }
-    }
-  }
+void halt(const char *message) {
+  Serial.println(message);
+  for (;;)
+    delay(1000);
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD_RATE);
+  Serial.begin(115200);
   pinMode(PIN_START, INPUT_PULLUP);
   pinMode(PIN_STOP, INPUT_PULLUP);
-  microphoneI2S.setPins(PIN_I2S_BCLK, PIN_I2S_WS, -1, PIN_I2S_DATA);
-  if (!microphoneI2S.begin(I2S_MODE_STD, AUDIO_SAMPLE_RATE,
-                           I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
-    Serial.println("INMP441 I2S init failed; check BCLK/WS/SD wiring");
-    while (true)
-      delay(1000);
-  }
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.printf(
-        "SSD1306 init failed; check SDA=GPIO%d SCL=GPIO%d and address 0x3C\n",
-        PIN_I2C_SDA, PIN_I2C_SCL);
-    while (true)
-      delay(1000);
-  }
-  Serial.printf(
-      "ESP32 tuner ready. INMP441 I2S: BCLK=%d WS=%d SD=%d at %lu Hz.\n",
-      PIN_I2S_BCLK, PIN_I2S_WS, PIN_I2S_DATA, (unsigned long)AUDIO_SAMPLE_RATE);
-}
 
-// Commands are newline-delimited. REC and LIVE temporarily take over the microphone.
-void handleSerialCommands() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\n') {
-      serialLine[serialLength] = 0;
-      if (strcmp(serialLine, "REC") == 0)
-        recordAudio();
-      else if (strcmp(serialLine, "LIVE") == 0)
-        streamLiveAudio();
-      serialLength = 0;
-    } else if (c != '\r') {
-      if (serialLength < sizeof(serialLine) - 1)
-        serialLine[serialLength++] = c;
-      else
-        serialLength = 0;
-    }
+  if (!Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, OLED_I2C_HZ))
+    halt("OLED I2C initialization failed; check SDA and SCL");
+  Wire.beginTransmission(OLED_ADDRESS);
+  if (Wire.endTransmission() != 0)
+    halt("OLED not responding at 0x3C; check wiring and address");
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS, true, false))
+    halt("SSD1306 initialization failed");
+  microphone.setPins(PIN_I2S_BCLK, PIN_I2S_WS, -1, PIN_I2S_DATA);
+  microphone.setTimeout(100);
+  if (!microphone.begin(I2S_MODE_STD, SAMPLE_RATE,
+                        I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
+    TuningReading reading;
+    reading.micStatus = MicStatus::ReadError;
+    drawTuner(display, reading);
+    display.display();
+    halt("INMP441 I2S initialization failed");
   }
+  drawTuner(display, TuningReading{});
+  display.display();
+
+  latestPitch = xQueueCreate(1, sizeof(PitchSample));
+  // Audio acquisition and OLED transfers run independently.
+  if (!latestPitch || xTaskCreate(readPitch, "pitch", 4096, nullptr, 2, nullptr) != pdPASS)
+    halt("Could not start pitch acquisition");
 }
 
 void loop() {
+  static bool running = true;
+  static PitchTracker tracker;
+  static TuningReading displayed;
+  static MicStatus micStatus = MicStatus::Ready;
+  static uint32_t lastDisplayAt = 0;
   if (digitalRead(PIN_STOP) == LOW)
     running = false;
   else if (digitalRead(PIN_START) == LOW)
     running = true;
-  handleSerialCommands();
-  float hz = 0;
-  if (running)
-    hz = estimateFrequency();
-  if (running &&
-      (uint32_t)(millis() - lastAudioReport) >= 1000) {
-    Serial.printf("I2S min=%d max=%d mean=%.0f span=%d rms=%.1f gate=%.1f "
-                  "quality=%.2f rate=%lu pitch=%.1f Hz\n",
-                  audioMin, audioMax, audioMean, audioMax - audioMin,
-                  pitchDetector.rms, pitchDetector.threshold,
-                  pitchDetector.quality, (unsigned long)AUDIO_SAMPLE_RATE, hz);
-    lastAudioReport = millis();
+
+  PitchSample sample;
+  if (xQueueReceive(latestPitch, &sample, 0) == pdTRUE) {
+    micStatus = sample.micStatus;
+    if (running)
+      tracker.accept(sample.frequency, sample.timestamp);
   }
-  const auto reading = tuningReading(hz, running);
-  if (reading.note[0])
-    Serial.printf("%.2f Hz, %s, %+d cents\n", hz, reading.note, reading.cents);
-  drawTuner(display, reading);
-  display.display();
-  // Blocking I2S reads already pace the physical tuner.
-  if (running) return;
-  delay(20);
+
+  const uint32_t now = millis();
+  if (now - lastDisplayAt >= DISPLAY_INTERVAL_MS || running == displayed.stopped) {
+    lastDisplayAt = now;
+    TuningReading reading = tracker.render(now, running);
+    if (running && reading.note < 0)
+      reading.micStatus = micStatus;
+    if (!reading.sameDisplayAs(displayed)) {
+      drawTuner(display, reading);
+      display.display();
+      displayed = reading;
+    }
+  }
+  delay(1);
 }

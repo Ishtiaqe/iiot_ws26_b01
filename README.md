@@ -1,15 +1,14 @@
 # ESP32 chromatic guitar tuner
 
-Pluck one string near the INMP441 microphone. The OLED shows the nearest note, its octave, and how many cents the string is flat or sharp. For example, an open A string at 110 Hz reads **A2 +0c**. A weak or irregular frame clears the pointer and asks for another pluck.
+Pluck one string near the INMP441 microphone. The OLED shows the nearest note, its octave, and how many cents the string is flat or sharp. For example, an open A string at 110 Hz reads **A2 +0c**. When the note fades, the tuner holds the last reading for up to five seconds. It then clears the needle and asks for another pluck.
 
 ## Start reading the firmware here
 
 | To understand or change | Open | Where to look |
 |---|---|---|
-| Wiring, input and timing | [src/main.cpp](src/main.cpp) | `setup()` starts the devices. `loop()` checks the buttons and serial commands, gets a pitch, and sends one reading to the OLED. |
+| Wiring, input and timing | [src/main.cpp](src/main.cpp) | `setup()` starts the devices. `loop()` checks the buttons, gets a pitch, and sends one reading to the OLED. |
 | Microphone samples and noise rejection | [src/pitch.h](src/pitch.h) | `tunerSample()` preserves the sign of the left I²S sample. `PitchDetector::process()` returns a frequency in hertz, or zero when the frame is too quiet or irregular. |
-| What the player sees | [src/tuner_display.h](src/tuner_display.h) | `tuningReading()` chooses the note and instruction. `drawTuner()` positions the text, scale and pointer on the 128 × 64 screen. |
-| Measurements used in the slides | [tools/verify_tuner.cpp](tools/verify_tuner.cpp) | `makeFrame()` generates the test audio. `main()` runs the clean, noisy, silent and held-note trials. |
+| What the player sees | [src/tuner_display.h](src/tuner_display.h) | `PitchTracker` selects and smooths the reading. `drawTuner()` positions the text, scale and pointer on the 128 × 64 screen. |
 
 **Example edit.** To widen the in-tune band to ±7 cents, change `IN_TUNE_CENTS` from 5 to 7 in `src/tuner_display.h`. A reading of +6c will then say **IN TUNE** and the two inner scale marks will move outward. This is a compile-time setting. Build again and upload to see it on the board. To move the action text, change its y-coordinate in `drawTuner()`. Pixel (0, 0) is the upper-left corner.
 
@@ -23,7 +22,7 @@ Connect the ESP32 with a USB data cable, then run:
 ~/.platformio/penv/bin/pio run -e direct_oled -t upload
 ```
 
-For diagnostics, run `~/.platformio/penv/bin/pio device monitor -b 460800` after uploading. Close the monitor before uploading again. The optional `REC` and `LIVE` serial commands temporarily pause tuning.
+Close any serial monitor before uploading.
 
 ## Physical circuit
 
@@ -41,19 +40,10 @@ Disconnect USB power before wiring. The firmware currently configures the pins b
 
 Use a 3.3 V-compatible OLED with 3.3 V I²C pull-ups, and share ground between the components. The tuner starts automatically. The buttons use internal pull-ups and should be normally open. See [inmp441_wiring.svg](inmp441_wiring.svg) for the configured connections; its OLED pins are likewise unconfirmed against the physical assembly.
 
-The detector processes 1024-sample frames at 16 kHz. Real instrument accuracy and display latency require hardware testing.
+## Tracking and display
 
-### Reproduce the presentation measurements
+The microphone runs at 16 kHz. Pitch estimates use a 64 ms window and advance by 32 ms, for about 31 estimates per second when processing keeps up. The OLED updates on its own schedule, up to about 30 frames per second, and only transfers a frame when something visible changes.
 
-Run from this directory on a computer with a C++17 compiler:
+While a note is valid, an exponential moving average follows large pitch changes more quickly and dampens smaller ones. The needle and cents readout resist one-step fluctuations. The nearest note has a 3-cent margin beyond its nominal boundary, and a new note takes two consecutive estimates to confirm. When the reference note changes, the needle takes the new note's position directly.
 
-```sh
-c++ -std=c++17 -O2 tools/verify_tuner.cpp -o /tmp/verify-tuner
-/tmp/verify-tuner
-```
-
-The program uses generated signed audio, a fixed random seed, the firmware detector and the display decision logic. It also checks the I²S signed conversion. End-to-end accuracy, display latency and actual room noise require tests on the assembled tuner.
-
-## Listen to the physical INMP441 live
-
-Upload the `direct_oled` firmware, close any Serial Monitor, then install the Python tools with `python3 -m pip install -r tools/requirements.txt`. Run `python tools/listen_esp32.py --port /dev/cu.usbserial-110`; it streams audio to the Mac's default output until Ctrl+C. Use headphones at low volume to avoid acoustic feedback. Adjust playback loudness with `--gain 2` or `--gain 8`; this changes host playback only, not the microphone or tuner gain. The direct firmware uses 460800 baud for the PCM stream.
+A missing estimate freezes the last rendered reading and shows **LAST READING**. Five seconds after the last accepted estimate, the tuner clears the needle and shows **PLUCK ONE STRING**. STOP clears the reading immediately. Actual update rate, latency, and rejection of background sounds need verification on the assembled tuner.
