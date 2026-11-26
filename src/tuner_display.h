@@ -162,7 +162,8 @@ void drawTuner(Screen &screen, const TuningReading &reading) {
   };
   char title[20] = "--";
   const char *action = reading.stopped ? "STOPPED" : "PLUCK ONE STRING";
-  if (!reading.stopped && reading.inputLevel >= 3)
+  // Level 5 is roughly rms 8; lower levels are within the INMP441 noise floor.
+  if (!reading.stopped && reading.inputLevel >= 5)
     action = "SOUND, NO PITCH";
   if (!reading.stopped && reading.micStatus == MicStatus::NoData)
     action = "CHECK MIC WIRING";

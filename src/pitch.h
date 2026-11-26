@@ -79,8 +79,9 @@ public:
       centered[i] = sample;
       energy[i + 2] = energy[i] + sample * sample;
     }
-    const float rms = sqrtf((energy[length] + energy[length + 1]) /
-                            WindowSamples);
+    // Normalize by the analysed length; dividing by the full window would
+    // under-report the level whenever the onset trim skipped samples.
+    const float rms = sqrtf((energy[length] + energy[length + 1]) / length);
     if (rms <= NUMERICAL_FLOOR)
       return {0, 0, rms};
 
